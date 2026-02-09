@@ -1,5 +1,6 @@
-# Code Tumbler Configuration
+# Code Tumbler Configuration  —  single source of truth for all non-secret settings.
 # Copy to config.yaml and customize:  cp config.yaml.example config.yaml
+# API keys and Docker networking overrides live in .env (see .env.example).
 
 # Active provider — must match a key under 'providers' below
 active_provider: ollama_local
