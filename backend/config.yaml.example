@@ -1,0 +1,145 @@
+# Code Tumbler Configuration
+# Copy to config.yaml and customize:  cp config.yaml.example config.yaml
+
+# Active provider — must match a key under 'providers' below
+active_provider: ollama_local
+
+# ── LLM Providers ────────────────────────────────────────────
+providers:
+  # Local: Ollama (recommended starting point)
+  ollama_local:
+    type: ollama
+    base_url: http://localhost:11434
+    model: llama3.1:8b               # change to your preferred model
+    context_length: 32768
+    cost_per_1k_input_tokens: 0.0
+    cost_per_1k_output_tokens: 0.0
+    temperature: 0.7
+    timeout: 300
+    concurrency_limit: 2
+    retry_max_attempts: 2
+    retry_base_delay: 1.0
+
+  # Local: vLLM (GPU server)
+  vllm_local:
+    type: vllm
+    base_url: http://localhost:8000
+    model: meta-llama/Llama-3.1-70B-Instruct
+    context_length: 128000
+    cost_per_1k_input_tokens: 0.0
+    cost_per_1k_output_tokens: 0.0
+    temperature: 0.7
+    timeout: 300
+    concurrency_limit: 7
+    retry_max_attempts: 3
+    retry_base_delay: 1.0
+
+  # Cloud: OpenAI
+  openai_gpt4:
+    type: openai
+    model: gpt-4o
+    cost_per_1k_input_tokens: 0.0025
+    cost_per_1k_output_tokens: 0.010
+    temperature: 0.7
+    timeout: 300
+    retry_max_attempts: 3
+    retry_base_delay: 1.0
+    # API key loaded from OPENAI_API_KEY env var
+
+  # Cloud: Anthropic
+  anthropic_sonnet:
+    type: anthropic
+    model: claude-sonnet-4-5-20250929
+    cost_per_1k_input_tokens: 0.003
+    cost_per_1k_output_tokens: 0.015
+    temperature: 0.7
+    timeout: 300
+    retry_max_attempts: 3
+    retry_base_delay: 1.0
+    # API key loaded from ANTHROPIC_API_KEY env var
+
+  # Cloud: Google Gemini
+  gemini_flash:
+    type: gemini
+    model: gemini-2.5-flash
+    cost_per_1k_input_tokens: 0.0
+    cost_per_1k_output_tokens: 0.0
+    temperature: 0.7
+    timeout: 300
+    # API key loaded from GOOGLE_API_KEY env var
+
+  # Custom: OpenAI-compatible endpoint (e.g., Open WebUI, LiteLLM)
+  # custom_endpoint:
+  #   type: openai
+  #   base_url: https://your-server.example.com/v1
+  #   model: your-model-name
+  #   api_key_env: CUSTOM_API_KEY
+  #   context_length: 32768
+  #   cost_per_1k_input_tokens: 0.0
+  #   cost_per_1k_output_tokens: 0.0
+  #   temperature: 0.7
+  #   timeout: 600
+  #   concurrency_limit: 4
+  #   retry_max_attempts: 3
+  #   retry_base_delay: 2.0
+
+# ── Tumbler Settings ─────────────────────────────────────────
+tumbler:
+  max_iterations: 10
+  quality_threshold: 8.0
+  project_timeout: 3600           # seconds
+  debounce_time: 3                # seconds
+  max_cost_per_project: 0.0       # USD, 0 = no limit
+
+  prompt_compression:
+    enabled: true
+    rate: 0.5                     # 50% token retention
+    preserve_code_blocks: true
+
+# ── Agent Provider Overrides (optional) ──────────────────────
+# Assign different models/providers per agent role.
+# Omit or leave empty to use active_provider for all agents.
+agent_providers:
+  # architect: anthropic_sonnet   # smart model for planning
+  # engineer: ollama_local        # fast local model for coding
+  # verifier: ollama_local        # local model for verification
+
+# ── Nothink Overrides (optional) ─────────────────────────────
+# Controls whether reasoning/thinking is suppressed per agent.
+# Only affects models that support /nothink (e.g., Qwen3).
+agent_nothink:
+  # architect: false
+  # engineer: true
+  # verifier: false
+
+# ── Database ─────────────────────────────────────────────────
+database:
+  url: postgresql://tumbler:changeme@localhost:5432/tumbler
+  pool_size: 5
+  max_overflow: 10
+
+# ── Logging ──────────────────────────────────────────────────
+logging:
+  level: INFO
+  format: json
+  file: logs/tumbler.log
+
+# ── Sandboxed Verification ───────────────────────────────────
+# Generated code runs in ephemeral Docker containers.
+# These are global defaults; per-project overrides are supported.
+verification:
+  sandbox_enabled: true
+  timeout_install: 120            # seconds (with network access)
+  timeout_build: 120              # seconds (no network)
+  timeout_test: 120               # seconds (no network)
+  timeout_lint: 60                # seconds (no network)
+  memory_limit: "1g"
+  cpu_limit: 1.0
+  tmpfs_size: "256m"
+  network_install: true
+  network_verify: false
+
+# ── Workspace ────────────────────────────────────────────────
+workspace:
+  base_path: ./projects
+  auto_archive: true
