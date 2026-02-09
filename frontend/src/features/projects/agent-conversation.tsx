@@ -9,7 +9,12 @@ import type { ConversationMessage, SSEEvent, SandboxPhaseEvent } from "@/lib/typ
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ChevronDown } from "lucide-react";
 import { SandboxOutput } from "./sandbox-output";
+import {
+  FileManifestViewer,
+  tryParseFileManifest,
+} from "./file-manifest-viewer";
 
 interface AgentConversationProps {
   projectName: string;
@@ -189,6 +194,9 @@ function ThinkingIndicator({ agent }: { agent: string }) {
   );
 }
 
+const COLLAPSE_LINE_THRESHOLD = 40;
+const COLLAPSE_PREVIEW_LINES = 20;
+
 function AgentBubble({
   message,
   isNew,
@@ -199,10 +207,28 @@ function AgentBubble({
   const cfg = AGENT_CONFIG[message.agent] || AGENT_CONFIG.system;
   const isError = message.role === "error";
   const isStatus = message.role === "status";
+  const [collapsed, setCollapsed] = useState(true);
 
   const label =
     message.metadata?.label || `${message.agent} ${message.role}`;
   const time = new Date(message.timestamp).toLocaleTimeString();
+
+  // Detect engineer file manifests (JSON array of {path, content})
+  const fileManifest = useMemo(() => {
+    if (message.agent === "engineer" && message.role === "output") {
+      return tryParseFileManifest(message.content);
+    }
+    return null;
+  }, [message.agent, message.role, message.content]);
+
+  // Collapsible long messages
+  const lines = message.content.split("\n");
+  const isLong = lines.length > COLLAPSE_LINE_THRESHOLD && !fileManifest;
+  const displayContent =
+    isLong && collapsed
+      ? lines.slice(0, COLLAPSE_PREVIEW_LINES).join("\n")
+      : message.content;
+  const remainingLines = lines.length - COLLAPSE_PREVIEW_LINES;
 
   // Status messages are rendered as compact inline messages
   if (isStatus) {
@@ -227,7 +253,7 @@ function AgentBubble({
       <div
         className={`${isError ? "bg-red-100/80 dark:bg-red-900/40" : cfg.headerBg} px-4 py-2 flex items-center justify-between`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-base">{isError ? "\u26a0\ufe0f" : cfg.icon}</span>
           <span className={`text-sm font-bold ${isError ? "text-red-600 dark:text-red-400" : cfg.accent}`}>
             {cfg.label}
@@ -274,11 +300,27 @@ function AgentBubble({
 
       {/* Content */}
       <div className="px-4 py-3 max-h-[600px] overflow-auto">
-        <StreamingContent
-          content={message.content}
-          isNew={isNew}
-          className={isError ? "text-red-800 dark:text-red-200" : cfg.text}
-        />
+        {fileManifest ? (
+          <FileManifestViewer files={fileManifest} />
+        ) : (
+          <>
+            <StreamingContent
+              content={displayContent}
+              isNew={isNew}
+              className={isError ? "text-red-800 dark:text-red-200" : cfg.text}
+            />
+            {isLong && (
+              <button
+                className={`mt-2 text-xs font-medium ${cfg.accent} hover:underline`}
+                onClick={() => setCollapsed(!collapsed)}
+              >
+                {collapsed
+                  ? `Show more (${remainingLines} more lines)`
+                  : "Show less"}
+              </button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -324,11 +366,15 @@ export function AgentConversation({
   projectName,
   isRunning,
 }: AgentConversationProps) {
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const cachedMessages = useStore(
+    (s) => s.conversationCache[projectName] ?? []
+  );
+  const setConversationCache = useStore((s) => s.setConversationCache);
+  const [messages, setMessages] = useState<ConversationMessage[]>(cachedMessages);
   const [prevCount, setPrevCount] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const isNearBottomRef = useRef(true);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   // Read streaming state directly from the store (decoupled from events array)
   const streamingChunk = useStore((s) => s.streamingChunk);
@@ -360,9 +406,10 @@ export function AgentConversation({
       .then((msgs) => {
         setPrevCount(msgs.length);
         setMessages(msgs);
+        setConversationCache(projectName, msgs);
       })
       .catch(() => {});
-  }, [projectName]);
+  }, [projectName, setConversationCache]);
 
   // Fetch on mount and periodically when running (but not while streaming)
   useEffect(() => {
@@ -395,10 +442,10 @@ export function AgentConversation({
   const handleScroll = useCallback(() => {
     const vp = viewportRef.current;
     if (!vp) return;
-    // Consider "near bottom" if within 80px of the bottom edge
     const threshold = 80;
-    isNearBottomRef.current =
+    const nearBottom =
       vp.scrollHeight - vp.scrollTop - vp.clientHeight < threshold;
+    setIsNearBottom(nearBottom);
   }, []);
 
   useEffect(() => {
@@ -410,10 +457,15 @@ export function AgentConversation({
 
   // Auto-scroll only when user is already at the bottom
   useEffect(() => {
-    if (isNearBottomRef.current) {
+    if (isNearBottom) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages.length, activeThinking, activeStreaming]);
+  }, [messages.length, activeThinking, activeStreaming, isNearBottom]);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setIsNearBottom(true);
+  }, []);
 
   // Group consecutive role="sandbox" messages (same iteration) into SandboxOutput blocks
   type RenderItem =
@@ -479,9 +531,9 @@ export function AgentConversation({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center justify-between">
+        <CardTitle className="text-sm flex items-center justify-between flex-wrap gap-2">
           <span>Agent Conversation</span>
-          <div className="flex gap-4 text-xs font-normal">
+          <div className="flex gap-4 text-xs font-normal flex-wrap">
             {Object.entries(AGENT_CONFIG).map(([key, cfg]) => (
               <span key={key} className="flex items-center gap-1.5">
                 <span className="text-sm">{cfg.icon}</span>
@@ -494,41 +546,55 @@ export function AgentConversation({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="h-[600px] pr-4" viewportRef={viewportRef}>
-          <div className="space-y-3">
-            {renderItems.map((item) =>
-              item.kind === "sandbox" ? (
-                <SandboxOutput
-                  key={item.key}
-                  phases={item.phases}
-                  isLive={false}
+        <div className="relative">
+          <ScrollArea
+            className="h-[calc(100vh-20rem)] min-h-[300px] pr-4"
+            viewportRef={viewportRef}
+          >
+            <div className="space-y-3">
+              {renderItems.map((item) =>
+                item.kind === "sandbox" ? (
+                  <SandboxOutput
+                    key={item.key}
+                    phases={item.phases}
+                    isLive={false}
+                  />
+                ) : (
+                  <AgentBubble
+                    key={`${item.msg.timestamp}-${item.index}`}
+                    message={item.msg}
+                    isNew={
+                      item.index >= prevCount - 1 &&
+                      item.index === messages.length - 1
+                    }
+                  />
+                )
+              )}
+              {activeSandbox && isRunning && (
+                <SandboxOutput phases={sandboxPhases} isLive={true} />
+              )}
+              {activeThinking && isRunning && !activeStreaming && (
+                <ThinkingIndicator agent={activeThinking.agent} />
+              )}
+              {activeStreaming && isRunning && (
+                <StreamingBubble
+                  agent={activeStreaming.agent}
+                  content={activeStreaming.content}
                 />
-              ) : (
-                <AgentBubble
-                  key={`${item.msg.timestamp}-${item.index}`}
-                  message={item.msg}
-                  isNew={
-                    item.index >= prevCount - 1 &&
-                    item.index === messages.length - 1
-                  }
-                />
-              )
-            )}
-            {activeSandbox && isRunning && (
-              <SandboxOutput phases={sandboxPhases} isLive={true} />
-            )}
-            {activeThinking && isRunning && !activeStreaming && (
-              <ThinkingIndicator agent={activeThinking.agent} />
-            )}
-            {activeStreaming && isRunning && (
-              <StreamingBubble
-                agent={activeStreaming.agent}
-                content={activeStreaming.content}
-              />
-            )}
-            <div ref={bottomRef} />
-          </div>
-        </ScrollArea>
+              )}
+              <div ref={bottomRef} />
+            </div>
+          </ScrollArea>
+          {!isNearBottom && (
+            <button
+              onClick={scrollToBottom}
+              className="absolute bottom-3 right-6 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary text-primary-foreground shadow-lg text-xs font-medium hover:bg-primary/90 transition-colors z-10"
+            >
+              <ChevronDown className="h-3.5 w-3.5" />
+              Latest
+            </button>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

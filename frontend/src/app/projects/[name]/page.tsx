@@ -16,7 +16,7 @@ import { CostSummary } from "@/features/cost/cost-summary";
 import { BudgetGauge } from "@/features/cost/budget-gauge";
 import { CostPerIterationChart } from "@/features/cost/cost-per-iteration-chart";
 import { CostChart } from "@/features/cost/cost-chart";
-import type { UsageData, AppConfig } from "@/lib/types";
+import type { UsageData, AppConfig, ProviderInfo } from "@/lib/types";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +34,7 @@ export default function ProjectDetailPage() {
   const [starting, setStarting] = useState(false);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [allProviders, setAllProviders] = useState<ProviderInfo[]>([]);
   const [resetKey, setResetKey] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -48,6 +49,7 @@ export default function ProjectDetailPage() {
     refresh();
     api.getUsage(name).then(setUsage).catch(() => {});
     api.getConfig().then(setConfig).catch(() => {});
+    api.listProviders().then(setAllProviders).catch(() => {});
     const interval = setInterval(() => {
       refresh();
       api.getUsage(name).then(setUsage).catch(() => {});
@@ -130,10 +132,10 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">{name}</h2>
-          <div className="flex items-center gap-3 mt-1">
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
             <Badge
               variant={status.status === "failed" ? "destructive" : "secondary"}
             >
@@ -149,16 +151,32 @@ export default function ProjectDetailPage() {
             )}
           </div>
           {status.providers && (
-            <div className="flex gap-3 mt-1">
-              {Object.entries(status.providers).map(([agent, info]) => (
-                <span
-                  key={agent}
-                  className="text-xs text-muted-foreground"
-                >
-                  {agent}: {info.provider}
-                  {info.is_override && " *"}
-                </span>
-              ))}
+            <div className="flex gap-3 mt-1 flex-wrap">
+              {Object.entries(status.providers).map(([agent, info]) => {
+                const pInfo = allProviders.find(
+                  (p) => p.name === info.provider
+                );
+                const isAsync = pInfo?.supports_async ?? false;
+                return (
+                  <span
+                    key={agent}
+                    className="text-xs text-muted-foreground flex items-center gap-1"
+                  >
+                    <span className="capitalize">{agent}:</span>{" "}
+                    {info.provider}
+                    {info.is_override && " *"}
+                    <Badge
+                      className={`text-[9px] px-1.5 py-0 h-4 border-0 ${
+                        isAsync
+                          ? "bg-green-600 text-white"
+                          : "bg-slate-500 text-white"
+                      }`}
+                    >
+                      {isAsync ? "Async" : "Sync"}
+                    </Badge>
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>

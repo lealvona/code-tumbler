@@ -243,6 +243,61 @@ Output as a JSON array:
 
     # -- Single-request generation ------------------------------------------
 
+    def _is_truncated_json(self, response: str) -> bool:
+        """Check if the response looks like truncated JSON output."""
+        cleaned = response.strip()
+        # Strip markdown fences for analysis
+        if cleaned.startswith('```'):
+            first_nl = cleaned.find('\n')
+            if first_nl != -1:
+                cleaned = cleaned[first_nl + 1:]
+        cleaned = cleaned.rstrip('`').strip()
+        # Truncated if it starts with [ but doesn't end with ]
+        if cleaned.startswith('[') and not cleaned.rstrip().endswith(']'):
+            return True
+        # Or starts with { and is clearly a partial object
+        if cleaned.startswith('{') and not cleaned.rstrip().endswith(']'):
+            return True
+        return False
+
+    def _request_completion(self, partial_response: str, **kwargs) -> str:
+        """Ask the model to complete a truncated JSON response.
+
+        Sends the partial output back as an assistant message and asks
+        the model to continue from where it left off.
+
+        Returns:
+            The continuation text (to be appended to partial_response)
+        """
+        messages = [
+            {"role": "system", "content": (
+                "You were generating a JSON array of files but your output was "
+                "truncated. Continue EXACTLY from where you left off. Do NOT "
+                "repeat any content already generated. Output only the remaining "
+                "JSON — no commentary, no markdown fences."
+            )},
+            {"role": "assistant", "content": partial_response[-3000:]},
+            {"role": "user", "content": "Continue the JSON output from where you stopped."},
+        ]
+
+        max_tokens = kwargs.pop('max_tokens', None) or self.default_max_tokens
+        temperature = kwargs.pop('temperature', None)
+
+        # Use streaming for the completion too
+        chunks = []
+        stream = self.provider.stream_chat(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+        for chunk in stream:
+            chunks.append(chunk)
+            if self._on_chunk:
+                self._on_chunk(chunk)
+
+        return "".join(chunks)
+
     def _generate_single(
         self, plan, iteration, feedback, previous_code, output_dir, **kwargs
     ) -> Dict[str, str]:
@@ -272,6 +327,20 @@ Output as a JSON array:
             debug_dir.mkdir(parents=True, exist_ok=True)
             debug_file = debug_dir / f"engineer_raw_output_iter{iteration}.txt"
             debug_file.write_text(response, encoding='utf-8')
+
+        # If the response looks truncated, request completion (up to 2 retries)
+        for attempt in range(2):
+            if not self._is_truncated_json(response):
+                break
+            logger.info(
+                f"Engineer output appears truncated ({len(response)} chars), "
+                f"requesting completion (attempt {attempt + 1}/2)"
+            )
+            continuation = self._request_completion(response, **kwargs)
+            response += continuation
+            if output_dir:
+                debug_file = debug_dir / f"engineer_raw_output_iter{iteration}_cont{attempt + 1}.txt"
+                debug_file.write_text(response, encoding='utf-8')
 
         try:
             return self._parse_files_json(response)
@@ -443,11 +512,17 @@ Output as a JSON array:
         # Clean up response
         response = response.strip()
 
-        # Try to extract JSON from markdown code blocks
+        # Try to extract JSON from markdown code blocks (handles truncated output
+        # where the closing ``` may be missing)
         json_block_pattern = r'```(?:json)?\s*\n(.*?)```'
         match = re.search(json_block_pattern, response, re.DOTALL)
         if match:
             response = match.group(1).strip()
+        elif response.startswith('```'):
+            # Truncated output — strip the opening fence without a closing one
+            first_newline = response.find('\n')
+            if first_newline != -1:
+                response = response[first_newline + 1:].strip()
 
         # Strategy 1: Try parsing as-is
         try:

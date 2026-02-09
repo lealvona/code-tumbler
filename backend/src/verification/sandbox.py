@@ -161,14 +161,14 @@ class CommandResult:
 class SandboxConfig:
     """Configuration for sandbox container limits."""
     enabled: bool = True
-    timeout_install: int = 120
-    timeout_build: int = 60
-    timeout_test: int = 60
-    timeout_lint: int = 30
-    memory_limit: str = "1g"
+    timeout_install: int = 300
+    timeout_build: int = 300
+    timeout_test: int = 120
+    timeout_lint: int = 60
+    memory_limit: str = "2g"
     cpu_limit: float = 1.0
     pids_limit: int = 256
-    tmpfs_size: str = "256m"
+    tmpfs_size: str = "512m"
     network_install: bool = True
     network_verify: bool = False
 
@@ -381,7 +381,11 @@ class SandboxExecutor:
                 # Security
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges:true"],
-                tmpfs={"/tmp": f"size={self.config.tmpfs_size}", "/root": "size=64m"},
+                tmpfs={
+                    "/tmp": f"size={self.config.tmpfs_size}",
+                    "/root": "size=64m",
+                    "/workspace": f"size={self.config.tmpfs_size}",
+                },
                 # Network
                 network_mode=network_mode,
                 # Lifecycle
