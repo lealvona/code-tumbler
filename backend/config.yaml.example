@@ -130,13 +130,13 @@ logging:
 # These are global defaults; per-project overrides are supported.
 verification:
   sandbox_enabled: true
-  timeout_install: 120            # seconds (with network access)
-  timeout_build: 120              # seconds (no network)
+  timeout_install: 300            # seconds (with network); npm install needs 3-5 min
+  timeout_build: 300              # seconds (no network); webpack/tailwind builds need time
   timeout_test: 120               # seconds (no network)
   timeout_lint: 60                # seconds (no network)
-  memory_limit: "1g"
+  memory_limit: "2g"              # Node/webpack are memory-hungry
   cpu_limit: 1.0
-  tmpfs_size: "256m"
+  tmpfs_size: "512m"              # room for node_modules temp files and build artifacts
   network_install: true
   network_verify: false
 

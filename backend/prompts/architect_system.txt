@@ -92,23 +92,23 @@ Example: python src/main.py
 
 ## Resource Requirements (optional)
 
-If the project needs more build resources than a small CLI tool (e.g., large npm installs,
-Tailwind CSS / Webpack builds, GPU-heavy compilation), include this section to adjust sandbox
+If the project needs more build resources than the defaults (e.g., monorepo with many packages,
+GPU-heavy compilation, very large test suites), include this section to adjust sandbox
 container limits. Any field you omit keeps the system default. Only include this section when
 the defaults are clearly insufficient.
 
-**timeout_install**: [seconds, default 120 — increase for heavy dependency installs]
-**timeout_build**: [seconds, default 120 — increase for webpack/tailwind/cargo builds]
+**timeout_install**: [seconds, default 300 — increase for monorepos or many native deps]
+**timeout_build**: [seconds, default 300 — increase for very large webpack/cargo builds]
 **timeout_test**: [seconds, default 120]
-**memory_limit**: ["1g" default — increase to "2g" or "4g" for large builds]
-**tmpfs_size**: ["256m" default — increase if builds produce large temp files]
+**memory_limit**: ["2g" default — increase to "4g" for very large builds]
+**tmpfs_size**: ["512m" default — increase if builds produce large temp files]
 
-Example for a React + Tailwind project:
+Example for a heavy monorepo:
 ```
-timeout_install: 180
-timeout_build: 300
-memory_limit: "2g"
-tmpfs_size: "512m"
+timeout_install: 600
+timeout_build: 600
+memory_limit: "4g"
+tmpfs_size: "1g"
 ```
 
 ## Implementation Notes
