@@ -1,0 +1,41 @@
+# Core dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+sse-starlette==1.8.2
+pydantic>=2.9.0  # Required by google-genai
+pydantic-settings>=2.1.0  # Upgrade to match pydantic
+
+# LLM Provider SDKs
+google-genai>=1.62.0  # Google Gemini API (new unified SDK) - install first
+openai>=1.50.0,<3.0.0  # Updated to fix httpx compatibility issue
+anthropic>=0.40.0,<1.0.0  # Updated to latest stable version
+requests>=2.31.0,<3.0.0
+httpx[http2]>=0.27.0,<1.0.0
+
+# File watching
+watchdog==3.0.0
+
+# Database
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.36
+alembic==1.13.1
+
+# Utilities
+pyyaml==6.0.1
+python-dotenv==1.0.0
+structlog==24.1.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Prompt compression (LLMLingua-2)
+llmlingua>=0.2.2
+
+# Sandboxed verification (Docker container management)
+docker>=7.0.0
+
+# Type checking (optional, for development)
+mypy==1.8.0
