@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { ProjectSummary, SSEEvent, SandboxPhaseEvent } from "./types";
+import type {
+  ProjectSummary,
+  SSEEvent,
+  SandboxPhaseEvent,
+  ConversationMessage,
+} from "./types";
 
 interface StreamingChunk {
   project: string;
@@ -34,6 +39,10 @@ interface AppStore {
   sandboxActive: { project: string; iteration: number } | null;
   setSandboxActive: (project: string, iteration: number) => void;
   clearSandboxActive: () => void;
+
+  // Conversation cache — persists messages across tab switches
+  conversationCache: Record<string, ConversationMessage[]>;
+  setConversationCache: (project: string, messages: ConversationMessage[]) => void;
 
   connected: boolean;
   setConnected: (connected: boolean) => void;
@@ -97,6 +106,18 @@ export const useStore = create<AppStore>((set) => ({
   setSandboxActive: (project, iteration) =>
     set({ sandboxActive: { project, iteration } }),
   clearSandboxActive: () => set({ sandboxActive: null }),
+
+  conversationCache: {},
+  setConversationCache: (project, messages) =>
+    set((state) => {
+      const cache = { ...state.conversationCache, [project]: messages };
+      // Evict oldest entries if cache exceeds 5 projects
+      const keys = Object.keys(cache);
+      if (keys.length > 5) {
+        delete cache[keys[0]];
+      }
+      return { conversationCache: cache };
+    }),
 
   connected: false,
   setConnected: (connected) => set({ connected }),

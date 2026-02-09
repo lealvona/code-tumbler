@@ -39,13 +39,27 @@ export function ProviderList({ providers }: { providers: ProviderInfo[] }) {
       {providers.map((p) => (
         <Card key={p.name}>
           <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-1">
               <CardTitle className="text-sm">{p.name}</CardTitle>
-              <div className="flex gap-1">
+              <div className="flex gap-1 flex-wrap">
                 <Badge variant={typeBadgeVariant[p.type] ?? "outline"}>
                   {p.type}
                 </Badge>
                 {p.is_active && <Badge variant="default">Active</Badge>}
+                <Badge
+                  className={`text-[10px] px-2 py-0 h-5 border-0 ${
+                    p.supports_async
+                      ? "bg-green-600 text-white"
+                      : "bg-slate-500 text-white"
+                  }`}
+                >
+                  {p.supports_async ? "Async" : "Sync"}
+                </Badge>
+                {p.concurrency_limit > 1 && (
+                  <Badge className="text-[10px] px-2 py-0 h-5 border-0 bg-blue-600 text-white">
+                    x{p.concurrency_limit}
+                  </Badge>
+                )}
               </div>
             </div>
           </CardHeader>
