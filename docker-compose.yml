@@ -1,0 +1,101 @@
+name: tumbler
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tumbler-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: tumbler
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: tumbler
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tumbler"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+
+  # Docker socket proxy — restricts Docker API access for sandboxed verification.
+  # Only allows container lifecycle and image pull; denies privileged operations.
+  # Note: The proxy emits a harmless HAProxy warning about "missing timeouts for
+  # backend docker-events" — this is intentional for the streaming events endpoint.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: tumbler-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1      # container create/start/stop/wait/remove/logs
+      IMAGES: 1           # image pull
+      POST: 1             # allow POST requests (needed for create/start)
+      NETWORKS: 1         # allow network inspection (for sandbox networking)
+      VOLUMES: 0          # deny volume management from API
+      SERVICES: 0         # deny swarm services
+      TASKS: 0            # deny swarm tasks
+      NODES: 0            # deny node management
+      BUILD: 0            # deny image build
+      EXEC: 0             # deny exec into containers
+      SWARM: 0            # deny swarm operations
+      LOG_LEVEL: warning
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sandbox-internal
+
+  backend:
+    build: ./backend
+    container_name: tumbler-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://tumbler:changeme@postgres:5432/tumbler
+      FRONTEND_URL: http://localhost:3000
+      VLLM_BASE_URL: ${VLLM_BASE_URL:-http://host.docker.internal:8000}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CUSTOM_API_KEY: ${CUSTOM_API_KEY:-}
+      HF_HOME: /app/models
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    volumes:
+      - ./projects:/app/projects
+      - ./backend/config.yaml:/app/config.yaml
+      - model_cache:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+    networks:
+      - default
+      - sandbox-internal
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:8000
+    container_name: tumbler-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      HOSTNAME: "0.0.0.0"
+    depends_on:
+      - backend
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
+  sandbox-internal:
+    driver: bridge
+    internal: true  # no external access — only backend <-> proxy
+
+volumes:
+  pgdata:
+  model_cache:
