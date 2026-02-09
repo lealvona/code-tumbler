@@ -597,6 +597,64 @@ Output as a JSON array:
 
         return files
 
+    @staticmethod
+    def _normalize_file_paths(files: Dict[str, str]) -> Dict[str, str]:
+        """Strip common root directory prefix from engineer-generated paths.
+
+        LLMs frequently wrap all paths in a project-name directory, e.g.
+        ``my-app/package.json`` instead of ``package.json``.  This causes
+        path mismatches in the sandbox (which expects marker files at the
+        workspace root).
+
+        Also strips leading ``./`` from paths.
+
+        Heuristic: if ALL paths share a single common first directory
+        segment **and** no root-level files exist in the dict, strip
+        that prefix.
+        """
+        if not files:
+            return files
+
+        # Normalise slashes and strip leading ./
+        cleaned: Dict[str, str] = {}
+        for p, content in files.items():
+            norm = p.replace("\\", "/")
+            while norm.startswith("./"):
+                norm = norm[2:]
+            cleaned[norm] = content
+        files = cleaned
+
+        # Root marker files that should live at the project root
+        root_markers = {
+            "package.json", "requirements.txt", "pyproject.toml",
+            "go.mod", "Cargo.toml", "pom.xml", "Makefile",
+        }
+
+        # If any marker already exists at top level, paths are fine
+        for p in files:
+            if "/" not in p and p in root_markers:
+                return files
+
+        # Check whether every path starts with the same single directory
+        first_segments: set = set()
+        for p in files:
+            parts = p.split("/")
+            if len(parts) < 2:
+                # A bare filename with no prefix — can't safely strip
+                return files
+            first_segments.add(parts[0])
+
+        if len(first_segments) != 1:
+            return files  # multiple prefixes, ambiguous
+
+        prefix = next(iter(first_segments)) + "/"
+        stripped = {p[len(prefix):]: c for p, c in files.items()}
+        logger.info(
+            "Stripped common root prefix '%s' from %d engineer file paths",
+            prefix, len(stripped),
+        )
+        return stripped
+
     def _write_files(self, files: Dict[str, str], output_dir: Path) -> None:
         """Write files to disk.
 
@@ -604,6 +662,7 @@ Output as a JSON array:
             files: Dictionary mapping file paths to content
             output_dir: Base directory to write files to
         """
+        files = self._normalize_file_paths(files)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for file_path, content in files.items():

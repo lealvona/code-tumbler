@@ -370,6 +370,12 @@ class SandboxExecutor:
             # write project files before start. Security is maintained by
             # dropping all capabilities, no-new-privileges, network
             # isolation, resource limits, and ephemeral container lifecycle.
+            #
+            # /workspace is intentionally NOT a tmpfs mount. Docker mounts
+            # tmpfs at container start, which would overlay files placed by
+            # put_archive (before start), making them invisible inside the
+            # container. The writable layer is ephemeral (destroyed with the
+            # container) so there is no security benefit to tmpfs here.
             container = self.client.containers.create(
                 image=image,
                 command=["sh", "-c", script],
@@ -384,7 +390,6 @@ class SandboxExecutor:
                 tmpfs={
                     "/tmp": f"size={self.config.tmpfs_size}",
                     "/root": "size=64m",
-                    "/workspace": f"size={self.config.tmpfs_size}",
                 },
                 # Network
                 network_mode=network_mode,
