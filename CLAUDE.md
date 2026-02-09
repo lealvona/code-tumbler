@@ -31,6 +31,8 @@ Always make a new branch for any changes:
 ```bash
 git checkout -b my-feature-branch
 ```
+Always figure out if there will be branch divergences before making commits
+Choose the path of least complexity when managing git history (rebasing vs merging).
 
 ## Project Layout
 
