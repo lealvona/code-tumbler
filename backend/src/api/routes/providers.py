@@ -49,8 +49,14 @@ async def list_provider_models(name: str, request: Request):
 
     try:
         provider = create_provider(pc)
-        models = provider.list_models()
+        # Run sync list_models in a thread so it doesn't block the event loop
+        models = await asyncio.wait_for(
+            asyncio.to_thread(provider.list_models),
+            timeout=15,
+        )
         return {"provider": name, "models": models}
+    except asyncio.TimeoutError:
+        raise HTTPException(504, f"Timed out listing models from '{name}'")
     except Exception as e:
         raise HTTPException(502, f"Failed to list models: {str(e)}")
 

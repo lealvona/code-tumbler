@@ -58,6 +58,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       CUSTOM_API_KEY: ${CUSTOM_API_KEY:-}
       HF_HOME: /app/models
       DOCKER_HOST: tcp://docker-socket-proxy:2375
