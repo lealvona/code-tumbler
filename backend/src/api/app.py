@@ -24,11 +24,18 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    # CORS - configurable via FRONTEND_URL env var
+    # CORS - allow the configured frontend URL plus common local variants
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    cors_origins = [frontend_url]
+    # Also allow 127.0.0.1 and localhost variants so either works in the browser
+    for host in ("localhost", "127.0.0.1"):
+        for scheme in ("http",):
+            variant = f"{scheme}://{host}:3000"
+            if variant not in cors_origins:
+                cors_origins.append(variant)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[frontend_url],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

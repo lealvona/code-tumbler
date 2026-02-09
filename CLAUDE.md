@@ -26,6 +26,12 @@ docker compose up --build -d    # rebuild and start
 docker logs code-tumbler-backend      # check backend logs
 ```
 
+### Git
+Always make a new branch for any changes:
+```bash
+git checkout -b my-feature-branch
+```
+
 ## Project Layout
 
 ```
