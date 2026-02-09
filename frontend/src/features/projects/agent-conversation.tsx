@@ -366,12 +366,17 @@ export function AgentConversation({
   projectName,
   isRunning,
 }: AgentConversationProps) {
-  const cachedMessages = useStore(
-    (s) => s.conversationCache[projectName] ?? []
-  );
   const setConversationCache = useStore((s) => s.setConversationCache);
-  const [messages, setMessages] = useState<ConversationMessage[]>(cachedMessages);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [prevCount, setPrevCount] = useState(0);
+
+  // Populate from cache on mount (avoids SSR hydration mismatch)
+  useEffect(() => {
+    const cached = useStore.getState().conversationCache[projectName];
+    if (cached && cached.length > 0) {
+      setMessages(cached);
+    }
+  }, [projectName]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [isNearBottom, setIsNearBottom] = useState(true);
