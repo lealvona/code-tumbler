@@ -1,0 +1,75 @@
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+
+# ── Virtual environments ────────────────────────────────────
+venv/
+env/
+
+# ── IDE ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Secrets & user-local config ──────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/config.yaml
+
+# ── Logs ─────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Database ─────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Runtime workspace (generated projects) ───────────────────
+projects/*/
+!projects/.gitkeep
+
+# ── Node.js / Frontend ──────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+
+# ── Testing ──────────────────────────────────────────────────
+.coverage
+.pytest_cache/
+htmlcov/
+backend/test_output/
+
+# ── Temporary / OS ───────────────────────────────────────────
+*.tmp
+*.temp
+.cache/
+.DS_Store
+Thumbs.db
+nul
+
+# ── Docker volumes ───────────────────────────────────────────
+pgdata/
+model_cache/
+
+# ── Local metadata (not committed) ──────────────────────────
+.claude/
+.apocrypha/
+.hf_cache/
+convo.json
+
+# ── Git internals ───────────────────────────────────────────
+**/.git_*/
