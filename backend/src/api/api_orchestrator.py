@@ -351,7 +351,7 @@ class APIOrchestrator(Orchestrator):
             report_file = project_path / "04_feedback" / f"REPORT_iter{iteration}.md"
 
             # Merge per-project verification overrides with global config
-            merged_vc = self.config.verification
+            merged_vc = self._config.verification
             project_overrides = state_mgr.get_verification_overrides()
             if project_overrides:
                 override_fields = {
