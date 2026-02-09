@@ -216,17 +216,17 @@ def load_config(config_path: Optional[str] = None) -> Config:
             extra_params=provider_data.get('extra_params', {})
         )
 
-    # Parse tumbler config
+    # Parse tumbler config (single source: config.yaml)
     tumbler_data = data.get('tumbler', {})
     tumbler = TumblerConfig(
-        max_iterations=int(os.getenv('MAX_ITERATIONS', tumbler_data.get('max_iterations', 10))),
-        quality_threshold=float(os.getenv('QUALITY_THRESHOLD', tumbler_data.get('quality_threshold', 8.0))),
-        project_timeout=int(os.getenv('PROJECT_TIMEOUT_SECONDS', tumbler_data.get('project_timeout', 3600))),
+        max_iterations=tumbler_data.get('max_iterations', 10),
+        quality_threshold=tumbler_data.get('quality_threshold', 8.0),
+        project_timeout=tumbler_data.get('project_timeout', 3600),
         debounce_time=tumbler_data.get('debounce_time', 3),
         max_cost_per_project=tumbler_data.get('max_cost_per_project', 0.0)
     )
 
-    # Parse database config
+    # Parse database config (DATABASE_URL env var overrides yaml for Docker networking)
     db_data = data.get('database', {})
     database = DatabaseConfig(
         url=os.getenv('DATABASE_URL', db_data.get('url', 'postgresql://tumbler:changeme@localhost:5432/tumbler')),
@@ -234,12 +234,12 @@ def load_config(config_path: Optional[str] = None) -> Config:
         max_overflow=db_data.get('max_overflow', 10)
     )
 
-    # Parse logging config
+    # Parse logging config (single source: config.yaml)
     log_data = data.get('logging', {})
     logging_config = LoggingConfig(
-        level=os.getenv('LOG_LEVEL', log_data.get('level', 'INFO')),
+        level=log_data.get('level', 'INFO'),
         format=log_data.get('format', 'json'),
-        file=os.getenv('LOG_FILE', log_data.get('file', 'logs/tumbler.log'))
+        file=log_data.get('file', 'logs/tumbler.log')
     )
 
     # Parse verification config
