@@ -51,13 +51,13 @@ class VerificationConfig:
     """Sandboxed verification configuration."""
 
     sandbox_enabled: bool = True
-    timeout_install: int = 120
-    timeout_build: int = 120
+    timeout_install: int = 300
+    timeout_build: int = 300
     timeout_test: int = 120
     timeout_lint: int = 60
-    memory_limit: str = "1g"
+    memory_limit: str = "2g"
     cpu_limit: float = 1.0
-    tmpfs_size: str = "256m"
+    tmpfs_size: str = "512m"
     network_install: bool = True
     network_verify: bool = False
 
@@ -246,13 +246,13 @@ def load_config(config_path: Optional[str] = None) -> Config:
     verify_data = data.get('verification', {})
     verification = VerificationConfig(
         sandbox_enabled=verify_data.get('sandbox_enabled', True),
-        timeout_install=verify_data.get('timeout_install', 120),
-        timeout_build=verify_data.get('timeout_build', 60),
-        timeout_test=verify_data.get('timeout_test', 60),
-        timeout_lint=verify_data.get('timeout_lint', 30),
-        memory_limit=verify_data.get('memory_limit', '1g'),
+        timeout_install=verify_data.get('timeout_install', 300),
+        timeout_build=verify_data.get('timeout_build', 300),
+        timeout_test=verify_data.get('timeout_test', 120),
+        timeout_lint=verify_data.get('timeout_lint', 60),
+        memory_limit=verify_data.get('memory_limit', '2g'),
         cpu_limit=float(verify_data.get('cpu_limit', 1.0)),
-        tmpfs_size=verify_data.get('tmpfs_size', '256m'),
+        tmpfs_size=verify_data.get('tmpfs_size', '512m'),
         network_install=verify_data.get('network_install', True),
         network_verify=verify_data.get('network_verify', False),
     )
