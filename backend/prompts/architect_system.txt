@@ -90,6 +90,46 @@ Example for Node.js: npm run build
 Example: python src/main.py
 ```
 
+## Specification Rubric
+
+You MUST also generate a `RUBRIC.yaml` inside a fenced YAML code block in your plan output.
+This rubric contains verifiable checklist items derived from your plan. The Verifier agent will
+use this rubric to systematically grade the generated code for specification alignment.
+
+Output the rubric as a YAML code block:
+
+```yaml
+rubric:
+  - id: FUNC-001
+    category: static
+    requirement: "Package.json contains dev, build, and test scripts"
+    check: "Verify scripts key in package.json has dev, build, test entries"
+    priority: critical
+  - id: DYN-001
+    category: dynamic
+    requirement: "Home page renders with navigation bar"
+    check: "Start dev server, navigate to /, verify nav element and heading exist"
+    priority: critical
+  - id: BEH-001
+    category: behavioral
+    requirement: "User can submit the contact form"
+    check: "Fill in name and email fields, click Submit, verify success message appears"
+    priority: important
+```
+
+**Categories:**
+- **static**: Can be verified by reading code or build output (imports, file existence, config correctness)
+- **dynamic**: Needs a running application to verify (page renders, API responds, dev server starts)
+- **behavioral**: Needs user interaction simulation (form submission, button clicks, navigation flows)
+
+**Rules for rubric generation:**
+1. Include 5-15 items covering the most important aspects of the plan
+2. Every critical requirement from the plan MUST have at least one rubric item
+3. For web applications, include at least 3 dynamic or behavioral items
+4. Keep check descriptions specific and machine-verifiable
+5. Use descriptive IDs: FUNC-NNN for functional/static, DYN-NNN for dynamic, BEH-NNN for behavioral
+6. Assign priority: critical (must work), important (should work), nice-to-have (polish)
+
 ## Resource Requirements (optional)
 
 If the project needs more build resources than the defaults (e.g., monorepo with many packages,
