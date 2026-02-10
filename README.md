@@ -72,7 +72,7 @@ Each iteration:
 
 ## Quickstart
 
-> **Prerequisites:** Docker, Docker Compose, and at least one LLM provider (Ollama recommended).
+> **Prerequisites:** Docker, Docker Compose, and at least one LLM provider (Ollama recommended). **Ensure at least 5GB of free disk space for successful builds.**
 
 ```bash
 # 1. Clone
