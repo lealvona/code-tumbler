@@ -87,6 +87,13 @@ You MUST output a JSON array of files. Each file object has:
 - **No Markdown Fences**: Return pure JSON, no ```json markers
 - **Complete Array**: All files in a single JSON array
 
+## 8. No Conversational Text
+- **Strict Output**: Output ONLY the JSON array.
+- **No Chatter**: Do NOT include "Here is the code..." or "I have fixed..."
+- **No Explanations**: Do NOT explain your changes in text. The code speaks for itself.
+- **No Markdown**: Do NOT wrap the JSON in markdown code blocks. Just the raw JSON string.
+
+
 # LANGUAGE-SPECIFIC GUIDELINES
 
 ## Python
