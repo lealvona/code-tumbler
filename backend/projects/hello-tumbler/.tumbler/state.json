@@ -1,0 +1,18 @@
+{
+  "status": "idle",
+  "current_phase": "idle",
+  "iteration": 0,
+  "max_iterations": 10,
+  "quality_threshold": 8.0,
+  "last_score": null,
+  "start_time": "2026-02-10T04:59:21.756903Z",
+  "last_update": "2026-02-10T04:59:21.756903Z",
+  "error": null,
+  "provider_overrides": {},
+  "verification": {},
+  "compression": {
+    "enabled": true,
+    "rate": 0.5,
+    "preserve_code_blocks": true
+  }
+}

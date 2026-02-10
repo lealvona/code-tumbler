@@ -1,0 +1,9 @@
+Create a simple Python CLI application called "hello-tumbler" that:
+
+1. Prints a colourful ASCII art banner on startup
+2. Accepts a --name flag (default: "World")
+3. Prints "Hello, {name}! Welcome to Code Tumbler."
+4. Includes a pytest test suite that verifies the greeting logic
+5. Has a pyproject.toml with project metadata
+
+Keep it simple — one source file, one test file, and a pyproject.toml.
