@@ -47,7 +47,7 @@ Choose the path of least complexity when managing git history (rebasing vs mergi
 2.  **Check Branch Status Before Pushing:** Before pushing any changes, always verify the state of your branch and its corresponding pull request.
     ```bash
     # Check for new changes on the remote main branch
-    git fetch lealvona
+    git fetch origin
     git status
 
     # Check the status of your pull request (e.g., for PR #9)
@@ -57,7 +57,7 @@ Choose the path of least complexity when managing git history (rebasing vs mergi
     ```bash
     # Switch to main and pull the latest changes
     git checkout main
-    git pull lealvona main
+    git pull origin main
 
     # Switch back to your feature branch and rebase
     git checkout my-feature-branch
