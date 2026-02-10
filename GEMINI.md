@@ -39,10 +39,33 @@ git checkout -b my-feature-branch
 ```
 Always figure out if there will be branch divergences before making commits
 Choose the path of least complexity when managing git history (rebasing vs merging).
-Use `git` and `gh` to pull, branch, commit, push and pr as cleanly as possible. 
-Create small semantically meaningful atomic commits, as best you can.
-Always check for PII or sensitive information before committing. 
-Use `git diff` to review changes before staging and committing.
+
+#### Git Integrity - NON-NEGOTIABLE
+**Violation of these rules will corrupt the repository. Exercise extreme caution.**
+
+1.  **NEVER Force Push to a Shared Branch:** Under no circumstances should `git push --force` be used on `main`, `develop`, or any branch that has an open pull request. Force pushing overwrites history and can permanently delete the work of others.
+2.  **Check Branch Status Before Pushing:** Before pushing any changes, always verify the state of your branch and its corresponding pull request.
+    ```bash
+    # Check for new changes on the remote main branch
+    git fetch lealvona
+    git status
+
+    # Check the status of your pull request (e.g., for PR #9)
+    gh pr status 9
+    ```
+3.  **Keep Your Branches Updated:** To avoid merge conflicts and outdated work, regularly rebase your feature branches onto the latest `main` branch.
+    ```bash
+    # Switch to main and pull the latest changes
+    git checkout main
+    git pull lealvona main
+
+    # Switch back to your feature branch and rebase
+    git checkout my-feature-branch
+    git rebase main
+    ```
+4.  **Resolve Conflicts Locally:** If a rebase or merge results in conflicts, resolve them on your local machine. Do not push code with conflict markers.
+5.  **Create New Pull Requests After a Bad Merge/Rebase:** If you have irreparably damaged a branch with a bad rebase or by force-pushing, DO NOT continue working on it. Close the associated pull request, create a *new* branch from a clean `main`, and carefully `cherry-pick` your commits. This isolates the damage and prevents it from spreading.
+
 
 ## Project Layout
 
