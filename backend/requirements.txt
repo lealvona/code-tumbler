@@ -32,8 +32,8 @@ pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
 
-# Prompt compression (LLMLingua-2) - Optional, now supports provider-based compression
-# llmlingua>=0.2.2  # Removed to save space/CPU
+# Prompt compression (LLMLingua-2)
+llmlingua>=0.2.2
 
 # Sandboxed verification (Docker container management)
 docker>=7.0.0

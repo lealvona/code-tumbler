@@ -221,6 +221,8 @@ class BaseAgent(ABC):
                 f"Truncating messages to fit."
             )
             messages = self._truncate_messages(messages, budget)
+            # Recalculate input tokens after truncation so clamping uses the correct value
+            input_tokens = self._token_counter.estimate_messages_tokens(messages, ptype)
 
         # Clamp max_tokens so input + output + safety fit the context window
         if max_tokens is not None:
