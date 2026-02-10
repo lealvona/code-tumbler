@@ -28,7 +28,8 @@ class CompressionSettings(BaseModel):
 
 _ALLOWED_VERIFICATION_KEYS = {
     "timeout_install", "timeout_build", "timeout_test", "timeout_lint",
-    "memory_limit", "cpu_limit", "tmpfs_size",
+    "timeout_e2e", "memory_limit", "memory_limit_e2e", "cpu_limit",
+    "tmpfs_size", "e2e_enabled",
 }
 
 

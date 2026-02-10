@@ -18,6 +18,14 @@ except ImportError:
 
 
 @dataclass
+class PromptCompressionConfig:
+    """Prompt compression configuration."""
+    enabled: bool = True
+    rate: float = 0.5
+    preserve_code_blocks: bool = True
+
+
+@dataclass
 class TumblerConfig:
     """Tumbler-specific configuration."""
 
@@ -26,6 +34,7 @@ class TumblerConfig:
     project_timeout: int = 3600
     debounce_time: int = 3
     max_cost_per_project: float = 0.0
+    prompt_compression: PromptCompressionConfig = field(default_factory=PromptCompressionConfig)
 
 
 @dataclass
@@ -60,6 +69,10 @@ class VerificationConfig:
     tmpfs_size: str = "512m"
     network_install: bool = True
     network_verify: bool = False
+    # E2E verification (Active Specification Alignment)
+    e2e_enabled: bool = True
+    timeout_e2e: int = 180
+    memory_limit_e2e: str = "3g"
 
 
 @dataclass
@@ -218,12 +231,20 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     # Parse tumbler config (single source: config.yaml)
     tumbler_data = data.get('tumbler', {})
+    pc_data = tumbler_data.get('prompt_compression', {})
+    prompt_compression = PromptCompressionConfig(
+        enabled=pc_data.get('enabled', True),
+        rate=pc_data.get('rate', 0.5),
+        preserve_code_blocks=pc_data.get('preserve_code_blocks', True)
+    )
+
     tumbler = TumblerConfig(
         max_iterations=tumbler_data.get('max_iterations', 10),
         quality_threshold=tumbler_data.get('quality_threshold', 8.0),
         project_timeout=tumbler_data.get('project_timeout', 3600),
         debounce_time=tumbler_data.get('debounce_time', 3),
-        max_cost_per_project=tumbler_data.get('max_cost_per_project', 0.0)
+        max_cost_per_project=tumbler_data.get('max_cost_per_project', 0.0),
+        prompt_compression=prompt_compression
     )
 
     # Parse database config (DATABASE_URL env var overrides yaml for Docker networking)
@@ -255,6 +276,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
         tmpfs_size=verify_data.get('tmpfs_size', '512m'),
         network_install=verify_data.get('network_install', True),
         network_verify=verify_data.get('network_verify', False),
+        e2e_enabled=verify_data.get('e2e_enabled', True),
+        timeout_e2e=verify_data.get('timeout_e2e', 180),
+        memory_limit_e2e=verify_data.get('memory_limit_e2e', '3g'),
     )
 
     # Parse workspace config
