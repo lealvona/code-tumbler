@@ -302,6 +302,10 @@ Output as a JSON array:
         self, plan, iteration, feedback, previous_code, output_dir, **kwargs
     ) -> Dict[str, str]:
         """Generate all files in a single request (existing behavior)."""
+        # compression_config is handled by execute(), but we must ensure it doesn't
+        # leak into _request_completion via kwargs
+        compression_config = kwargs.pop('compression_config', None)
+        
         context = {
             'plan': plan,
             'iteration': iteration,
@@ -313,14 +317,20 @@ Output as a JSON array:
         if output_dir:
             debug_dir = output_dir.parent / ".tumbler" / "logs"
             debug_dir.mkdir(parents=True, exist_ok=True)
-            debug_messages = self._build_messages(context)
-            debug_input_file = debug_dir / f"engineer_input_iter{iteration}.json"
-            debug_input_file.write_text(
-                json.dumps(debug_messages, indent=2, ensure_ascii=False),
-                encoding='utf-8'
-            )
+            # Re-inject compression_config for execute() if needed, or pass separately
+            # Actually, base_agent.execute expects it in kwargs if we want compression.
+            # So we pass it explicitly to execute, but NOT to _request_completion.
+            
+        # Force JSON mode for OpenAI/vLLM providers to prevent conversational output
+        if self.provider.config.type.value in ('openai', 'vllm'):
+            kwargs['response_format'] = {"type": "json_object"}
 
-        response = self.execute(context, **kwargs)
+        # We need to pass compression_config to execute
+        exec_kwargs = kwargs.copy()
+        if compression_config:
+            exec_kwargs['compression_config'] = compression_config
+
+        response = self.execute(context, **exec_kwargs)
 
         if output_dir:
             debug_dir = output_dir.parent / ".tumbler" / "logs"
@@ -361,6 +371,9 @@ Output as a JSON array:
         target_files, chunk_num, total_chunks, output_dir, **kwargs
     ) -> Dict[str, str]:
         """Generate a subset of files as one chunk request."""
+        # compression_config handling
+        compression_config = kwargs.pop('compression_config', None)
+
         context = {
             'plan': plan,
             'iteration': iteration,
@@ -376,7 +389,16 @@ Output as a JSON array:
             },
         }
 
-        response = self.execute(context, **kwargs)
+        # Force JSON mode for OpenAI/vLLM providers
+        if self.provider.config.type.value in ('openai', 'vllm'):
+            kwargs['response_format'] = {"type": "json_object"}
+
+        # Pass compression_config to execute
+        exec_kwargs = kwargs.copy()
+        if compression_config:
+            exec_kwargs['compression_config'] = compression_config
+
+        response = self.execute(context, **exec_kwargs)
 
         # Save debug output per chunk
         if output_dir:

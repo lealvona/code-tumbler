@@ -783,8 +783,8 @@ Generate the Playwright test file now. Output ONLY the test file content, no mar
                 if results.e2e_tests_total > 0:
                     item.verified = self._grade_dynamic_item(item, e2e_output)
                 else:
-                    # No E2E ran — leave as ungraded
-                    item.verified = None
+                    # No E2E ran — mark as failed because verification was missing
+                    item.verified = False
                     item.notes = "E2E tests did not run"
 
     @staticmethod
@@ -818,6 +818,9 @@ Generate the Playwright test file now. Output ONLY the test file content, no mar
             elif results.tests_total > 0:
                 item.notes = f"{results.tests_passed}/{results.tests_total} tests passed"
                 return results.tests_passed > 0
+            else:
+                item.notes = "No tests were executed"
+                return False
 
         # Default: if build succeeded, give benefit of doubt for static items
         if results.build_success:
