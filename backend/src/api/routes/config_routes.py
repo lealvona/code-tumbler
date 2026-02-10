@@ -21,6 +21,11 @@ async def get_config(request: Request):
             "project_timeout": config.tumbler.project_timeout,
             "debounce_time": config.tumbler.debounce_time,
             "max_cost_per_project": config.tumbler.max_cost_per_project,
+            "prompt_compression": {
+                "enabled": config.tumbler.prompt_compression.enabled,
+                "rate": config.tumbler.prompt_compression.rate,
+                "preserve_code_blocks": config.tumbler.prompt_compression.preserve_code_blocks,
+            }
         },
     }
 
@@ -52,6 +57,13 @@ async def update_config(body: dict, request: Request):
         for key in ["max_iterations", "quality_threshold", "project_timeout", "debounce_time", "max_cost_per_project"]:
             if key in body["tumbler"]:
                 data["tumbler"][key] = body["tumbler"][key]
+        
+        if "prompt_compression" in body["tumbler"]:
+            if "prompt_compression" not in data["tumbler"]:
+                data["tumbler"]["prompt_compression"] = {}
+            for key in ["enabled", "rate", "preserve_code_blocks"]:
+                if key in body["tumbler"]["prompt_compression"]:
+                    data["tumbler"]["prompt_compression"][key] = body["tumbler"]["prompt_compression"][key]
 
     # Write back
     with open(config_path, "w", encoding="utf-8") as f:

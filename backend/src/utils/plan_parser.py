@@ -16,7 +16,9 @@ _RESOURCE_FIELDS: Dict[str, type] = {
     "timeout_build": int,
     "timeout_test": int,
     "timeout_lint": int,
+    "timeout_e2e": int,
     "memory_limit": str,
+    "memory_limit_e2e": str,
     "cpu_limit": float,
     "tmpfs_size": str,
 }
