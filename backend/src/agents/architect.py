@@ -2,12 +2,17 @@
 
 The Architect analyzes user requirements and produces a comprehensive technical plan
 including technology stack, directory structure, and verification strategy.
+It also generates a RUBRIC.yaml for specification alignment grading.
 """
 
+import logging
+import re
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 from .base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class ArchitectAgent(BaseAgent):
@@ -151,6 +156,16 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
         if output_path:
             self.save_file(output_path, plan)
 
+        # Extract and save RUBRIC.yaml alongside PLAN.md
+        if output_path:
+            rubric_yaml = self._extract_rubric_yaml(plan)
+            if rubric_yaml:
+                rubric_path = output_path.parent / "RUBRIC.yaml"
+                self.save_file(rubric_path, rubric_yaml)
+                logger.info("Saved specification rubric to %s", rubric_path)
+            else:
+                logger.debug("No rubric YAML block found in plan output")
+
         return plan
 
     def revise_plan(
@@ -207,3 +222,24 @@ Please revise the plan to address the feedback. Maintain the same format and str
             self.save_file(output_path, revised_plan)
 
         return revised_plan
+
+    @staticmethod
+    def _extract_rubric_yaml(plan: str) -> Optional[str]:
+        """Extract RUBRIC.yaml content from the plan output.
+
+        Looks for a YAML code block containing a top-level 'rubric:' key.
+        Returns the raw YAML text (without fences), or None if not found.
+        """
+        # Match ```yaml ... ``` blocks that contain "rubric:"
+        for match in re.finditer(r"```(?:yaml|yml)\s*\n(.*?)```", plan, re.DOTALL):
+            block = match.group(1).strip()
+            if block.startswith("rubric:") or "\nrubric:" in block:
+                return block
+
+        # Fallback: look for a bare "rubric:" section without fences
+        # (some models may not always use fences)
+        match = re.search(r"^(rubric:\s*\n(?:\s+-\s+.*\n?)+)", plan, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+
+        return None

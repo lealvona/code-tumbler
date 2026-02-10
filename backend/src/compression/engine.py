@@ -1,11 +1,12 @@
-"""Prompt compression engine using LLMLingua-2.
+"""Prompt compression engine.
 
-Implements the "Zipper Architecture": store full text internally,
-compress just-in-time before API transmission. Never compress active
-instructions or code output.
+Supports two modes:
+1. Local: Uses Microsoft's LLMLingua-2 (BERT-based) for token-level compression.
+   Requires 'llmlingua' and 'torch' packages (CPU/GPU inference).
+2. LLM: Uses a fast/cheap LLM provider (e.g., Gemini Flash, GPT-4o-mini) to
+   summarize/compress context. Zero local inference load.
 
-Uses Microsoft's LLMLingua-2 (BERT-based token classifier) for
-token-level keep/drop decisions — no hallucinations, only removal.
+Implements "Zipper Architecture": store full text, compress just-in-time.
 """
 
 import logging
@@ -18,25 +19,23 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     from utils.context_manager import TokenCounter
+    from utils.provider_factory import create_provider
+    from providers.base import ProviderConfig, ProviderType
 except ImportError:
     try:
         from ..utils.context_manager import TokenCounter
+        from ..utils.provider_factory import create_provider
+        from ..providers.base import ProviderConfig, ProviderType
     except ImportError:
-        TokenCounter = None  # Fallback: use word splitting
+        TokenCounter = None
+        create_provider = None
+        ProviderConfig = None
+        ProviderType = None
 
 logger = logging.getLogger(__name__)
 
-# Regex to find fenced code blocks (``` with optional language tag)
-_CODE_BLOCK_RE = re.compile(
-    r'(```[\w]*\n.*?\n```)',
-    re.DOTALL,
-)
-
-# Regex to find <compress>...</compress> markers
-_COMPRESS_MARKER_RE = re.compile(
-    r'<compress>(.*?)</compress>',
-    re.DOTALL,
-)
+_CODE_BLOCK_RE = re.compile(r'(```[\w]*\n.*?\n```)', re.DOTALL)
+_COMPRESS_MARKER_RE = re.compile(r'<compress>(.*?)</compress>', re.DOTALL)
 
 
 @dataclass
@@ -50,13 +49,14 @@ class CompressedResult:
 
 
 class CompressionEngine:
-    """Singleton prompt compression engine using LLMLingua-2.
-
-    Lazy-loads the model on first use to avoid startup cost when
-    compression is disabled. Thread-safe via lock on model loading.
-
-    Falls back gracefully if llmlingua is not installed — returns
-    text unchanged with a warning log.
+    """Singleton prompt compression engine.
+    
+    Can use either local LLMLingua-2 model (BERT) or an external LLM provider.
+    Configured via environment variables:
+      - COMPRESSION_BACKEND: 'llmlingua2' (BERT-based, default) or 'llm_provider' (summarization)
+      - COMPRESSION_PROVIDER: 'gemini', 'openai', 'ollama', etc. (for 'llm_provider' backend)
+      - COMPRESSION_MODEL: Model name (e.g., 'gemini-1.5-flash')
+      - COMPRESSION_API_KEY: API key (if different from default)
     """
 
     _instance: Optional['CompressionEngine'] = None
@@ -64,7 +64,6 @@ class CompressionEngine:
 
     @classmethod
     def get_instance(cls) -> 'CompressionEngine':
-        """Get or create the singleton instance (lazy model loading)."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -72,25 +71,27 @@ class CompressionEngine:
         return cls._instance
 
     def __init__(self):
-        self._model = None
+        # Default to 'llmlingua2' if not specified, but check if user used old var
+        self._backend = os.environ.get('COMPRESSION_BACKEND')
+        if not self._backend:
+            old_type = os.environ.get('COMPRESSION_TYPE', 'local').lower()
+            self._backend = 'llm_provider' if old_type == 'llm' else 'llmlingua2'
+
+        self._provider_instance = None
+        self._local_model = None
         self._model_loaded = False
         self._model_lock = threading.Lock()
         self._available = True
         self._device = os.environ.get('COMPRESSION_DEVICE', 'cpu')
-        self._token_counter = TokenCounter() if TokenCounter is not None else None
+        self._token_counter = TokenCounter() if TokenCounter else None
 
     def _count_tokens(self, text: str) -> int:
-        """Count tokens using TokenCounter if available, else word splitting."""
-        if self._token_counter is not None:
+        if self._token_counter:
             return self._token_counter.estimate_tokens(text)
         return len(text.split()) if text else 0
 
     def _ensure_model(self) -> bool:
-        """Load the LLMLingua-2 model if not already loaded.
-
-        Returns:
-            True if model is available, False if loading failed.
-        """
+        """Initialize the compression backend."""
         if self._model_loaded:
             return self._available
 
@@ -98,36 +99,67 @@ class CompressionEngine:
             if self._model_loaded:
                 return self._available
 
-            try:
-                from llmlingua import PromptCompressor
-                logger.info(
-                    "Loading LLMLingua-2 model "
-                    "(microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank) "
-                    f"on device={self._device}..."
-                )
-                t0 = time.time()
-                self._model = PromptCompressor(
-                    model_name="microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
-                    use_llmlingua2=True,
-                    device_map=self._device,
-                )
-                elapsed = (time.time() - t0) * 1000
-                logger.info(f"LLMLingua-2 model loaded in {elapsed:.0f}ms")
-                self._available = True
-            except ImportError:
-                logger.warning(
-                    "llmlingua package not installed — compression disabled. "
-                    "Install with: pip install llmlingua"
-                )
-                self._available = False
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load LLMLingua-2 model — compression disabled: {e}"
-                )
-                self._available = False
+            if self._backend == 'llm_provider':
+                self._init_llm_provider()
+            else:
+                self._init_local_model()
 
             self._model_loaded = True
             return self._available
+
+    def _init_llm_provider(self):
+        """Initialize external LLM provider for compression."""
+        if not create_provider:
+            logger.error("Provider factory not available — LLM compression disabled")
+            self._available = False
+            return
+
+        try:
+            p_type_str = os.environ.get('COMPRESSION_PROVIDER', 'gemini').upper()
+            try:
+                p_type = ProviderType[p_type_str]
+            except KeyError:
+                logger.warning(f"Unknown provider {p_type_str}, defaulting to GEMINI")
+                p_type = ProviderType.GEMINI
+
+            api_key = os.environ.get('COMPRESSION_API_KEY') or os.environ.get(f"{p_type_str}_API_KEY")
+            model = os.environ.get('COMPRESSION_MODEL', 'gemini-1.5-flash')
+
+            config = ProviderConfig(
+                type=p_type,
+                api_key=api_key or "dummy", # Provider might load from env internally
+                model=model,
+                temperature=0.0,
+            )
+            
+            logger.info(f"Initializing LLM compression with {p_type.name} ({model})...")
+            self._provider_instance = create_provider(config)
+            self._available = True
+            logger.info("LLM compression provider ready")
+
+        except Exception as e:
+            logger.error(f"Failed to init LLM provider: {e}")
+            self._available = False
+
+    def _init_local_model(self):
+        """Initialize local LLMLingua-2 model."""
+        try:
+            from llmlingua import PromptCompressor
+            logger.info(f"Loading local LLMLingua-2 on {self._device}...")
+            t0 = time.time()
+            self._local_model = PromptCompressor(
+                model_name="microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
+                use_llmlingua2=True,
+                device_map=self._device,
+            )
+            logger.info(f"LLMLingua-2 loaded in {(time.time()-t0)*1000:.0f}ms")
+            self._available = True
+        except ImportError:
+            logger.warning("llmlingua not installed. Install with: pip install llmlingua")
+            self._available = False
+        except Exception as e:
+            logger.warning(f"Failed to load local model: {e}")
+            self._available = False
 
     def compress_context(
         self,
@@ -136,63 +168,37 @@ class CompressionEngine:
         target_token: int = -1,
         preserve_code_blocks: bool = True,
     ) -> CompressedResult:
-        """Compress context text, optionally preserving fenced code blocks.
-
-        Args:
-            text: The context text to compress.
-            rate: Token retention rate (0.5 = keep 50% of tokens).
-            target_token: If >0, compress to this many tokens (overrides rate).
-            preserve_code_blocks: If True, extract fenced code blocks before
-                compression and reinsert them after.
-
-        Returns:
-            CompressedResult with compressed text and metrics.
-        """
-        if not text or self._count_tokens(text) < 50:
-            # Too short to benefit from compression
-            tokens = self._count_tokens(text)
-            return CompressedResult(
-                text=text,
-                original_tokens=tokens,
-                compressed_tokens=tokens,
-                ratio=1.0,
-                time_ms=0.0,
-            )
+        """Compress context using the configured backend."""
+        orig_tokens = self._count_tokens(text)
+        if not text or orig_tokens < 50:
+            return CompressedResult(text, orig_tokens, orig_tokens, 1.0, 0.0)
 
         if not self._ensure_model():
-            # Fallback: return unchanged
-            tokens = self._count_tokens(text)
-            return CompressedResult(
-                text=text,
-                original_tokens=tokens,
-                compressed_tokens=tokens,
-                ratio=1.0,
-                time_ms=0.0,
-            )
+            return CompressedResult(text, orig_tokens, orig_tokens, 1.0, 0.0)
 
         t0 = time.time()
-
+        
+        # Determine strict or loose compression based on preserve_code_blocks
         if preserve_code_blocks:
             compressed_text = self._compress_preserving_code(text, rate, target_token)
         else:
             compressed_text = self._compress_raw(text, rate, target_token)
 
         elapsed_ms = (time.time() - t0) * 1000
-
-        orig_tokens = self._count_tokens(text)
         comp_tokens = self._count_tokens(compressed_text)
         ratio = comp_tokens / orig_tokens if orig_tokens > 0 else 1.0
 
-        return CompressedResult(
-            text=compressed_text,
-            original_tokens=orig_tokens,
-            compressed_tokens=comp_tokens,
-            ratio=ratio,
-            time_ms=elapsed_ms,
-        )
+        return CompressedResult(compressed_text, orig_tokens, comp_tokens, ratio, elapsed_ms)
 
     def _compress_raw(self, text: str, rate: float, target_token: int) -> str:
-        """Compress text directly without code block preservation."""
+        """Compress text using backend logic."""
+        if self._backend == 'llm_provider' and self._provider_instance:
+            return self._compress_with_llm(text, rate)
+        elif self._local_model:
+            return self._compress_with_local(text, rate, target_token)
+        return text
+
+    def _compress_with_local(self, text: str, rate: float, target_token: int) -> str:
         kwargs = {
             "context": [text],
             "rate": rate,
@@ -200,117 +206,122 @@ class CompressionEngine:
         }
         if target_token > 0:
             kwargs["target_token"] = target_token
+        
+        try:
+            result = self._local_model.compress_prompt(**kwargs)
+            return result.get("compressed_prompt", text)
+        except Exception as e:
+            logger.error(f"Local compression failed: {e}")
+            return text
 
-        result = self._model.compress_prompt(**kwargs)
-        return result.get("compressed_prompt", text)
+    def _compress_with_llm(self, text: str, rate: float) -> str:
+        """Use LLM to summarize/compress text."""
+        # Simple zero-shot summarization prompt
+        prompt = (
+            f"Compress the following text to approximately {int(rate*100)}% of its original length. "
+            "Preserve all key technical details, variable names, and logic. "
+            "Remove redundancy and verbosity.\n\n"
+            f"TEXT:\n{text}"
+        )
+        
+        # Run in a separate thread to avoid event loop conflicts with async callers
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def run_in_new_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # Assuming provider.chat is async. If it's sync (some might be?), this still works
+                # but we need to check if chat is a coroutine.
+                # Our providers return a coroutine or response. 
+                # Based on provider_factory, they are async.
+                coro = self._provider_instance.chat([{'role': 'user', 'content': prompt}])
+                if asyncio.iscoroutine(coro):
+                    return loop.run_until_complete(coro)
+                return coro
+            finally:
+                loop.close()
 
-    def _compress_preserving_code(
-        self, text: str, rate: float, target_token: int
-    ) -> str:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_in_new_loop)
+            try:
+                return future.result(timeout=60) # 60s timeout
+            except Exception as e:
+                logger.error(f"LLM compression failed/timed out: {e}")
+                return text
+
+    def _compress_preserving_code(self, text: str, rate: float, target_token: int) -> str:
         """Compress text while preserving fenced code blocks verbatim."""
-        # Find all code blocks and replace with placeholders
-        code_blocks: List[Tuple[str, str]] = []
-        placeholder_template = "\n__CODE_BLOCK_{}_PRESERVED__\n"
+        code_blocks = []
+        placeholder_tmpl = "\n__CODE_BLOCK_{}_PRESERVED__\n"
 
-        def replace_code_block(match):
+        def replace_cb(match):
             idx = len(code_blocks)
-            code_blocks.append((placeholder_template.format(idx), match.group(0)))
-            return placeholder_template.format(idx)
+            code_blocks.append((placeholder_tmpl.format(idx), match.group(0)))
+            return placeholder_tmpl.format(idx)
 
-        text_with_placeholders = _CODE_BLOCK_RE.sub(replace_code_block, text)
-
-        # Compress the text (with placeholders intact)
+        text_with_placeholders = _CODE_BLOCK_RE.sub(replace_cb, text)
         compressed = self._compress_raw(text_with_placeholders, rate, target_token)
 
-        # Reinsert code blocks
-        for placeholder, original_code in code_blocks:
-            compressed = compressed.replace(placeholder.strip(), original_code)
-
+        for placeholder, original in code_blocks:
+            compressed = compressed.replace(placeholder.strip(), original)
+        
         return compressed
 
-    def compress_messages(
-        self,
-        messages: List[Dict[str, str]],
-        config: Dict,
-    ) -> Tuple[List[Dict[str, str]], Dict]:
-        """Compress <compress> blocks within messages.
-
-        Finds <compress>...</compress> markers in message content,
-        compresses the text within, and replaces the markers with
-        compressed text. System prompts and unmarked content are
-        left untouched.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'.
-            config: Compression config dict with keys:
-                - rate (float): Token retention rate, default 0.5
-                - preserve_code_blocks (bool): Preserve fenced code, default True
-
-        Returns:
-            Tuple of (compressed_messages, metrics_dict).
-        """
+    def compress_messages(self, messages: List[Dict], config: Dict) -> Tuple[List[Dict], Dict]:
+        """Compress <compress> blocks within messages."""
         rate = config.get('rate', 0.5)
         preserve_code = config.get('preserve_code_blocks', True)
+        
+        total_orig = 0
+        total_comp = 0
+        total_time = 0.0
+        blocks = 0
 
-        total_original = 0
-        total_compressed = 0
-        total_time_ms = 0.0
-        blocks_compressed = 0
-
-        compressed_messages = []
+        new_msgs = []
         for msg in messages:
             content = msg.get('content', '')
-
-            # Never compress system prompts
-            if msg.get('role') == 'system':
-                compressed_messages.append(dict(msg))
+            if msg.get('role') == 'system' or not content:
+                new_msgs.append(dict(msg))
                 continue
 
-            # Find and compress <compress> blocks
             markers = list(_COMPRESS_MARKER_RE.finditer(content))
             if not markers:
-                compressed_messages.append(dict(msg))
+                new_msgs.append(dict(msg))
                 continue
 
             new_content = content
-            # Process in reverse order to maintain string positions
+            # Reverse order to keep indices valid
             for match in reversed(markers):
                 block_text = match.group(1)
-                result = self.compress_context(
-                    block_text,
-                    rate=rate,
-                    preserve_code_blocks=preserve_code,
-                )
-                total_original += result.original_tokens
-                total_compressed += result.compressed_tokens
-                total_time_ms += result.time_ms
-                blocks_compressed += 1
+                res = self.compress_context(block_text, rate, -1, preserve_code)
+                
+                total_orig += res.original_tokens
+                total_comp += res.compressed_tokens
+                total_time += res.time_ms
+                blocks += 1
 
-                # Replace the full <compress>...</compress> with compressed text
                 new_content = (
                     new_content[:match.start()]
-                    + result.text
+                    + res.text
                     + new_content[match.end():]
                 )
-
-            compressed_messages.append({**msg, 'content': new_content})
+            new_msgs.append({**msg, 'content': new_content})
 
         metrics = {
-            'original_tokens': total_original,
-            'compressed_tokens': total_compressed,
-            'compression_ratio': (
-                total_compressed / total_original if total_original > 0 else 1.0
-            ),
-            'compression_time_ms': round(total_time_ms, 1),
-            'blocks_compressed': blocks_compressed,
+            'original_tokens': total_orig,
+            'compressed_tokens': total_comp,
+            'compression_ratio': (total_comp / total_orig if total_orig > 0 else 1.0),
+            'compression_time_ms': round(total_time, 1),
+            'blocks_compressed': blocks,
         }
-
-        if blocks_compressed > 0:
+        
+        if blocks > 0:
             logger.info(
-                f"Compressed {blocks_compressed} blocks: "
-                f"{total_original} -> {total_compressed} tokens "
-                f"(ratio={metrics['compression_ratio']:.2f}, "
-                f"time={total_time_ms:.0f}ms)"
+                f"Compressed {blocks} blocks: {total_orig}->{total_comp} "
+                f"(ratio={metrics['compression_ratio']:.2f}, time={total_time:.0f}ms) "
+                f"using {self._backend}"
             )
 
-        return compressed_messages, metrics
+        return new_msgs, metrics

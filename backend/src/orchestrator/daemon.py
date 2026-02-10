@@ -9,14 +9,20 @@ import json
 import logging
 import sys
 import time
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from datetime import datetime
 import threading
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 try:
     from .state_manager import StateManager, ProjectPhase
@@ -26,6 +32,91 @@ except ImportError:
     from orchestrator.state_manager import StateManager, ProjectPhase
     from agents import ArchitectAgent, EngineerAgent, VerifierAgent
     from utils.logger import get_logger
+
+
+class ResourceAwareQueue:
+    """Queue that schedules jobs based on system resource availability."""
+
+    def __init__(self, orchestrator: 'Orchestrator', max_workers: int = 2, cpu_threshold: float = 85.0, memory_threshold: float = 90.0):
+        self.orchestrator = orchestrator
+        self.queue: queue.Queue = queue.Queue()
+        self.max_workers = max_workers
+        self.cpu_threshold = cpu_threshold
+        self.memory_threshold = memory_threshold
+        self.running = False
+        self.workers: List[threading.Thread] = []
+        self.logger = get_logger("orchestrator.queue")
+
+        # Initialize cpu_percent
+        if psutil:
+            psutil.cpu_percent(interval=None)
+            self.logger.info("Resource monitoring enabled (psutil detected)")
+        else:
+            self.logger.warning("Resource monitoring disabled (psutil not found)")
+
+    def start(self):
+        """Start worker threads."""
+        self.running = True
+        for i in range(self.max_workers):
+            t = threading.Thread(target=self._worker_loop, args=(i,), daemon=True)
+            t.start()
+            self.workers.append(t)
+        self.logger.info(f"ResourceAwareQueue started with {self.max_workers} workers (thresholds: CPU>{self.cpu_threshold}%, MEM>{self.memory_threshold}%)")
+
+    def stop(self):
+        """Stop worker threads."""
+        self.running = False
+        # We don't join here because they are daemon threads, 
+        # but we could signal them if needed.
+
+    def put(self, file_path: Path):
+        """Add a file path to the processing queue."""
+        self.queue.put(file_path)
+
+    def _worker_loop(self, worker_id: int):
+        while self.running:
+            try:
+                # Get item with timeout to allow checking self.running
+                file_path = self.queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            # Check resources before starting
+            wait_count = 0
+            while self.running:
+                if self._check_resources(worker_id, log_wait=(wait_count % 6 == 0)): # Log every ~30s
+                    break
+                wait_count += 1
+                time.sleep(5)  # Wait for resources to free up
+
+            if not self.running:
+                break
+
+            try:
+                self.orchestrator.handle_trigger(file_path)
+            except Exception as e:
+                self.logger.error(f"Worker {worker_id}: Error processing {file_path}: {e}")
+            finally:
+                self.queue.task_done()
+
+    def _check_resources(self, worker_id: int, log_wait: bool = True) -> bool:
+        """Check if system resources are available."""
+        if not psutil:
+            return True
+
+        # Check CPU (blocking for 0.1s to get accurate reading)
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory().percent
+
+        if cpu > self.cpu_threshold or mem > self.memory_threshold:
+            if log_wait:
+                self.logger.warning(
+                    f"Worker {worker_id}: System busy (CPU: {cpu:.1f}%, Mem: {mem:.1f}%). "
+                    f"Waiting for load to drop below {self.cpu_threshold}%/{self.memory_threshold}%..."
+                )
+            return False
+        
+        return True
 
 
 class ProjectEventHandler(FileSystemEventHandler):
@@ -111,18 +202,13 @@ class ProjectEventHandler(FileSystemEventHandler):
         return True
 
     def _schedule_processing(self, file_path: Path):
-        """Schedule processing of trigger file in background thread.
+        """Schedule processing of trigger file via the resource-aware queue.
 
         Args:
             file_path: Trigger file path
         """
-        # Run in background thread to avoid blocking file watcher
-        thread = threading.Thread(
-            target=self.orchestrator.handle_trigger,
-            args=(file_path,),
-            daemon=True
-        )
-        thread.start()
+        self.orchestrator.job_queue.put(file_path)
+
 
 
 class Orchestrator:
@@ -163,6 +249,9 @@ class Orchestrator:
         # Currently processing projects (prevent concurrent runs)
         self._processing_lock = threading.Lock()
         self._processing_projects: set = set()
+        
+        # Initialize resource-aware job queue
+        self.job_queue = ResourceAwareQueue(self)
 
     def start(self):
         """Start the orchestrator daemon."""
@@ -173,6 +262,9 @@ class Orchestrator:
         self.logger.info(f"Quality threshold: {self.quality_threshold}/10")
         self.logger.info(f"Max iterations: {self.max_iterations}")
         self.logger.info("")
+
+        # Start job queue workers
+        self.job_queue.start()
 
         # Ensure workspace exists
         self.workspace_root.mkdir(parents=True, exist_ok=True)
@@ -196,6 +288,8 @@ class Orchestrator:
 
     def stop(self):
         """Stop the orchestrator daemon."""
+        if self.job_queue:
+            self.job_queue.stop()
         if self.observer:
             self.observer.stop()
             self.observer.join()

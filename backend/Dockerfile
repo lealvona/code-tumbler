@@ -2,15 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for psycopg2
+# Install system dependencies for psycopg2 and psutil
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc \
+    libpq-dev gcc python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
-# Install CPU-only PyTorch first (no CUDA, saves ~2GB)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code

@@ -126,6 +126,48 @@ You MUST output your report in the following Markdown format:
 {If score < 8: "❌ No - Needs {N} more iteration(s)"}
 ```
 
+# SPECIFICATION ALIGNMENT GRADING
+
+When a rubric is provided (in the "Specification Alignment" section), you MUST:
+
+1. **Grade each rubric item** as PASS, FAIL, or N/A based on the verification evidence
+2. For **static** items: check build output, lint output, and code content
+3. For **dynamic** items: check E2E test results
+4. For **behavioral** items: check E2E test results
+
+Include a "## Specification Alignment" section in your report with this table format:
+
+| ID | Category | Requirement | Status | Notes |
+|----|----------|-------------|--------|-------|
+| FUNC-001 | static | ... | PASS | Build succeeded |
+| DYN-001 | dynamic | ... | FAIL | Element not found |
+
+## E2E Test Results (Web Applications)
+
+When E2E test results are provided, include a "## E2E Test Results" section:
+
+**Tests Passed**: X/Y
+
+For each failing E2E test:
+1. What was being tested (rubric item reference)
+2. What went wrong (error message or observation)
+3. Specific fix recommendation for the Engineer
+
+## Enhanced Score Breakdown (Web Applications)
+
+For web applications with E2E results, use this 6-component breakdown:
+
+- **Build** (0-2): Installation and build success
+- **Unit Tests** (0-2): Unit test pass rate
+- **Lint** (0-1): Code quality / linting
+- **No Errors** (0-1): No critical errors
+- **E2E Tests** (0-2): E2E test pass rate
+- **Spec Completeness** (0-2): Rubric items verified
+
+**Total**: {sum}/10
+
+For non-web projects (no E2E results), use the standard 4-component breakdown as before.
+
 # SCORING GUIDELINES
 
 ## Score 10/10 - Perfect

@@ -1,4 +1,4 @@
-# CLAUDE.md — Code Tumbler
+# GEMINI.md — Code Tumbler
 
 ## Project Overview
 
@@ -9,15 +9,21 @@ software. It supports multiple LLM providers and multiple target languages.
 ## Development Environment
 
 ### Shell
-Always use **Git Bash** for all terminal commands on Windows. Do not use PowerShell or cmd.exe.
+Use the system's default shell for all terminal commands. For Windows, this typically means PowerShell.
 
 ### Python
-Use the local virtual environment for all Python operations:
+It is recommended to use a virtual environment for Python development. Create and activate a virtual environment (e.g., using `python -m venv venv`) and install dependencies from `backend/requirements.txt`.
+
 ```bash
-backend/venv/Scripts/python
-backend/venv/Scripts/pip
+# Example: Create and activate a venv (if not already present)
+python -m venv backend/venv
+backend/venv/Scripts/Activate.ps1 # On Windows PowerShell
+# or
+source backend/venv/bin/activate # On Linux/macOS or Git Bash
+
+# Install dependencies
+backend/venv/Scripts/pip install -r backend/requirements.txt
 ```
-Do **not** use system Python or create new virtual environments.
 
 ### Docker
 The project runs as a multi-container Docker Compose stack:
@@ -33,6 +39,10 @@ git checkout -b my-feature-branch
 ```
 Always figure out if there will be branch divergences before making commits
 Choose the path of least complexity when managing git history (rebasing vs merging).
+Use `git` and `gh` to pull, branch, commit, push and pr as cleanly as possible. 
+Create small semantically meaningful atomic commits, as best you can.
+Always check for PII or sensitive information before committing. 
+Use `git diff` to review changes before staging and committing.
 
 ## Project Layout
 
@@ -72,7 +82,7 @@ These methods enforce:
 - **Path containment**: every file path is resolved and validated against the project root before deletion
 - **Allowlisted directories**: only directories in the explicit allowlist can be cleared
 - **Symlink safety**: symlinks are removed (the link, not the target) only if the link itself is within the project
-- **Mount point protection**: `os.path-ismount()` check before any directory removal
+- **Mount point protection**: `os.path.ismount()` check before any directory removal
 - **No chmod**: files that can't be deleted are logged and skipped, never force-removed
 - **Bottom-up deletion**: files first, then empty directories via `rmdir()`
 
@@ -133,7 +143,7 @@ When making changes to this codebase:
 - Never wrap sandbox output or error messages in compress tags
 
 ### Provider Abstraction
-- All LLM calls go through the provider abstraction in `backend/srcs/providers/`
+- All LLM calls go through the provider abstraction in `backend/src/providers/`
 - Per-agent provider overrides are supported (config.yaml `agent_providers` + per-project overrides)
 - Cost tracking is automatic per call
 
@@ -143,17 +153,17 @@ When making changes to this codebase:
 - Always use `StateManager` methods rather than direct file I/O for project state
 
 ### Testing Changes
-After modifying backend code:
+After modifying backend code, ensure all tests pass. This typically involves:
 ```bash
-# Syntax check
-backend/venv/Scripts/python -c "import ast; ast.parse(open('backend/src/FILE.py').read())"
+# Run unit tests using pytest (after activating your Python virtual environment)
+backend/venv/Scripts/python -m pytest backend/tests/
 
-# Rebuild containers
+# Rebuild and restart Docker containers to apply changes
 docker compose up --build -d
 
-# Check logs
+# Check backend logs for any runtime errors
 docker logs code-tumbler-backend --tail 30
 
-# Test an API endpoint
+# Test an API endpoint (example)
 curl -s http://localhost:8000/api/projects
 ```

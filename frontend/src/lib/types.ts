@@ -96,6 +96,11 @@ export interface AppConfig {
     project_timeout: number;
     debounce_time: number;
     max_cost_per_project: number;
+    prompt_compression: {
+      enabled: boolean;
+      rate: number;
+      preserve_code_blocks: boolean;
+    };
   };
 }
 

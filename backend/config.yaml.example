@@ -96,6 +96,10 @@ tumbler:
     enabled: true
     rate: 0.5                     # 50% token retention
     preserve_code_blocks: true
+    # Backend configuration (controlled via env vars):
+    # COMPRESSION_BACKEND=llm_provider    # 'llm_provider' or 'llmlingua2' (default)
+    # COMPRESSION_PROVIDER=gemini         # 'gemini', 'openai', 'anthropic' (for llm_provider)
+    # COMPRESSION_MODEL=gemini-1.5-flash
 
 # ── Agent Provider Overrides (optional) ──────────────────────
 # Assign different models/providers per agent role.
