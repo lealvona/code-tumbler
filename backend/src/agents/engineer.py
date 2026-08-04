@@ -83,6 +83,9 @@ class EngineerAgent(BaseAgent):
         feedback = context.get('feedback') or ''
         previous_code = context.get('previous_code') or {}
         chunk_info = context.get('chunk_info')
+        # rules may come via context or be stashed on the instance by generate_code
+        # (the single vs chunked paths build contexts separately).
+        rules = context.get('rules') or getattr(self, '_active_rules', None)
 
         # Build the chunk-specific task instruction suffix
         if chunk_info:
@@ -193,6 +196,14 @@ Generate the COMPLETE file tree again as JSON (even files that didn't change).
 Output as a JSON array:
 [{{"path": "...", "content": "..."}}, ...]
 """
+
+        # Inject "Rules & Lessons Learned" just before the task instructions,
+        # OUTSIDE the <compress> block (normative; capped by the ledger upstream).
+        if rules:
+            rules_block = f"\n# Rules & Lessons Learned (must follow)\n\n{rules}\n"
+            user_message = user_message.replace(
+                "\n# Your Task\n", rules_block + "\n# Your Task\n", 1
+            )
 
         return [
             {"role": "system", "content": self.system_prompt},
@@ -447,6 +458,10 @@ Output as a JSON array:
         Raises:
             ValueError: If output is not valid JSON
         """
+        # Stash rules for _build_messages (single & chunked paths build contexts
+        # separately); pop so it never leaks into the provider kwargs.
+        self._active_rules = kwargs.pop('rules', None)
+
         # Calculate budget to decide if chunking is needed
         budget = self._context_manager.calculate_budget(
             self.provider.config, self.system_prompt, self.default_max_tokens

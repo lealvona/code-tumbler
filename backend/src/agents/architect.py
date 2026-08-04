@@ -87,6 +87,7 @@ class ArchitectAgent(BaseAgent):
         project_name = context.get('project_name', 'project')
         constraints = context.get('constraints', {})
         spec = context.get('spec')
+        rules = context.get('rules')
 
         # Build user message — context in <compress> markers, task instructions outside
         user_message = f"""<compress>
@@ -119,6 +120,16 @@ model, architecture, UI views, interchange, integrations, security posture):
 {spec}
 """
 
+        # Rules & Lessons Learned — normative, kept OUTSIDE <compress> (capped upstream).
+        if rules:
+            user_message += f"""
+# Rules & Lessons Learned (must follow)
+
+These rules were set by the operator or learned from past runs. Honor them:
+
+{rules}
+"""
+
         user_message += """
 # Your Task
 
@@ -145,6 +156,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
         constraints: Dict[str, Any] = None,
         output_path: Path = None,
         spec: str = None,
+        rules: str = None,
         **kwargs
     ) -> str:
         """Generate a project plan from requirements.
@@ -155,6 +167,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
             constraints: Optional constraints (budget, time, etc.)
             output_path: Where to save PLAN.md (optional)
             spec: Optional Phase-1 YAML specification suite (authoritative context)
+            rules: Optional rendered "Rules & Lessons Learned" text (from the ledger)
             **kwargs: Additional LLM parameters
 
         Returns:
@@ -165,6 +178,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
             'project_name': project_name,
             'constraints': constraints or {},
             'spec': spec,
+            'rules': rules,
         }
 
         # Execute the agent

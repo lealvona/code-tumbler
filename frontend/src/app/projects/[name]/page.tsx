@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PhaseIndicator } from "@/features/projects/phase-indicator";
 import { SpecConsole } from "@/features/projects/spec-console";
+import { ProjectRules } from "@/features/projects/project-rules";
 import { ArtifactBrowser } from "@/features/projects/artifact-browser";
 import { ProjectProviderConfig } from "@/features/projects/project-providers";
 import { AgentConversation } from "@/features/projects/agent-conversation";
@@ -220,6 +221,7 @@ export default function ProjectDetailPage() {
         <TabsList>
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
           <TabsTrigger value="spec">Spec</TabsTrigger>
+          <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
@@ -236,6 +238,10 @@ export default function ProjectDetailPage() {
 
         <TabsContent value="spec" className="mt-4">
           <SpecConsole projectName={name} isRunning={status.is_running} />
+        </TabsContent>
+
+        <TabsContent value="rules" className="mt-4">
+          <ProjectRules projectName={name} />
         </TabsContent>
 
         <TabsContent value="status" className="mt-4">

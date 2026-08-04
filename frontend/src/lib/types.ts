@@ -169,6 +169,40 @@ export interface ConversationMessage {
   };
 }
 
+export interface Rule {
+  id: string;
+  scope: "global" | "project";
+  category: string;
+  text: string;
+  source: "manual" | "seed" | "promoted";
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface RuleCandidate {
+  id: string;
+  signature: string;
+  category: string;
+  evidence: string;
+  suggested_text: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface GlobalRulesData {
+  categories: string[];
+  rules: Rule[];
+}
+
+export interface ProjectRulesData {
+  categories: string[];
+  global_rules: Rule[];
+  project_rules: Rule[];
+  effective: Rule[];
+  candidates: RuleCandidate[];
+}
+
 export interface SandboxPhaseEvent {
   project: string;
   phase: "install" | "build" | "test" | "lint";

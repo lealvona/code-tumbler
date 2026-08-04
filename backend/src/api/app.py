@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.event_bus import EventBus
-from api.routes import health, projects, providers, config_routes, events, analytics
+from api.routes import health, projects, providers, config_routes, events, analytics, rules
 from api.seed_demo import seed_demo_project
 from db.session import init_engines
 from utils.config import load_config
@@ -64,5 +64,6 @@ def create_app() -> FastAPI:
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(events.router, prefix="/api")
     app.include_router(analytics.router, prefix="/api")
+    app.include_router(rules.router, prefix="/api")
 
     return app

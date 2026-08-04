@@ -453,6 +453,15 @@ class APIOrchestrator(Orchestrator):
 
         # Sandbox phase callback — publishes SSE events and persists to conversation
         def _on_sandbox_phase(phase_name: str, phase_data: dict):
+            # Auto-detect known failure signatures into the rules ledger as
+            # candidates (surfaced for review, NOT injected into prompts).
+            try:
+                from rules import RulesLedger
+                combined = (phase_data.get("stdout", "") or "") + "\n" + (phase_data.get("stderr", "") or "")
+                RulesLedger(self.workspace_root).detect_and_record(project_path, combined)
+            except Exception as e:
+                self.logger.debug(f"Rules auto-detect skipped: {e}")
+
             self.event_bus.publish("sandbox_phase", {
                 "project": project_path.name,
                 "phase": phase_name,

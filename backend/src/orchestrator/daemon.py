@@ -28,10 +28,12 @@ try:
     from .state_manager import StateManager, ProjectPhase
     from ..agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from ..utils.logger import get_logger
+    from ..rules import RulesLedger
 except ImportError:
     from orchestrator.state_manager import StateManager, ProjectPhase
     from agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from utils.logger import get_logger
+    from rules import RulesLedger
 
 
 class ResourceAwareQueue:
@@ -359,6 +361,14 @@ class Orchestrator:
             with self._processing_lock:
                 self._processing_projects.discard(project_name)
 
+    def _render_rules(self, project_path: Path) -> Optional[str]:
+        """Rendered, capped 'Rules & Lessons Learned' from the ledger (or None)."""
+        try:
+            return RulesLedger(self.workspace_root).render_for_prompt(project_path)
+        except Exception as e:
+            self.logger.warning(f"Could not load rules ledger: {e}")
+            return None
+
     def _read_spec_suite(self, project_path: Path) -> Optional[str]:
         """Concatenate the Phase-1 YAML spec suite (if any) for the Architect.
 
@@ -445,6 +455,7 @@ class Orchestrator:
             project_name=project_path.name,
             output_path=plan_file,
             spec=spec,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -541,6 +552,7 @@ class Orchestrator:
             feedback=feedback,
             previous_code=previous_code,
             output_dir=staging_dir,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -803,6 +815,7 @@ class Orchestrator:
             feedback=feedback,
             previous_code=previous_code,
             output_dir=staging_dir,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
