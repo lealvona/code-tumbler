@@ -58,6 +58,19 @@ class RuntimeInfo:
 # per-phase containers (see the Python runtime note below).
 _PY_DEPS = ".sandbox_deps"
 
+# Manifest-aware install: tools first (always succeed), then whichever manifest
+# exists. Guards against a generated project that references a manifest it didn't
+# actually write (runtime detection can fall back to plan text), which previously
+# hard-failed install on "Could not open requirements file".
+_PY_INSTALL_CMD = (
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8 && "
+    f"if [ -f requirements.txt ]; then "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt; "
+    f"elif [ -f pyproject.toml ]; then "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} . 2>&1 || true; "
+    f"fi"
+)
+
 # Prefer a tests/ dir (keeps pytest's rootdir/conftest scan away from .sandbox_deps);
 # fall back to the workspace root. PYTHONPATH makes the installed deps importable.
 _PY_TEST_CMD = (
@@ -93,7 +106,7 @@ _RUNTIME_MARKERS = [
     ("requirements.txt", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt pytest flake8"],
+        install_commands=[_PY_INSTALL_CMD],
         build_commands=[],
         test_commands=[_PY_TEST_CMD],
         lint_commands=[_PY_LINT_CMD],
@@ -101,7 +114,7 @@ _RUNTIME_MARKERS = [
     ("pyproject.toml", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} . pytest flake8 2>&1 || pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8"],
+        install_commands=[_PY_INSTALL_CMD],
         build_commands=[],
         test_commands=[_PY_TEST_CMD],
         lint_commands=[_PY_LINT_CMD],
