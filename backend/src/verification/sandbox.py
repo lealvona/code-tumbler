@@ -364,8 +364,19 @@ class SandboxExecutor:
                         os.makedirs(parent, exist_ok=True)
                         f = tar.extractfile(member)
                         if f is not None:
-                            with open(os.path.join(workspace_path, member.name), "wb") as out:
+                            out_path = os.path.join(workspace_path, member.name)
+                            with open(out_path, "wb") as out:
                                 out.write(f.read())
+                            # Preserve the executable bit from the archive (owner-
+                            # only class of chmod; masked to safe perm bits). Without
+                            # this, console scripts like .sandbox_deps/bin/pytest
+                            # lose +x on the round-trip and a plan's bare `pytest`
+                            # fails with "Permission denied" in later phases.
+                            if member.mode & 0o111:
+                                try:
+                                    os.chmod(out_path, member.mode & 0o755)
+                                except OSError:
+                                    pass
 
             logger.info(f"Extracted workspace from container back to {workspace_path}")
         except Exception as e:
@@ -380,6 +391,7 @@ class SandboxExecutor:
         network_mode: str = "none",
         label: str = "sandbox",
         extract_workspace: bool = False,
+        env_exports: Optional[List[str]] = None,
     ) -> List[CommandResult]:
         """Run commands inside an ephemeral container.
 
@@ -405,8 +417,14 @@ class SandboxExecutor:
         if not commands:
             return []
 
-        # Build a single shell script from all commands
+        # Build a single shell script from all commands. env_exports (e.g. the
+        # Python PYTHONPATH/PATH pointing at .sandbox_deps) are exported first so
+        # they apply to EVERY command regardless of whether the command came from
+        # the plan or the runtime defaults — this is what keeps a plan's bare
+        # `pytest`/`flake8` resolving to the persisted deps.
         script_lines = ["#!/bin/sh", "set -e", "cd /workspace"]
+        for exp in (env_exports or []):
+            script_lines.append(exp)
         for cmd in commands:
             script_lines.append(f"echo '=== RUNNING: {cmd} ==='")
             script_lines.append(cmd)
@@ -598,8 +616,30 @@ class SandboxExecutor:
 
         workspace = str(project_path.resolve())
 
-        # Merge plan strategy with runtime defaults (plan commands take priority)
-        install_cmds = strategy.get("install") or runtime.install_commands
+        # For Python, export PYTHONPATH + PATH pointing at the workspace-local
+        # .sandbox_deps (where deps are installed via --target). This makes deps
+        # and console scripts resolvable by ANY command form — `pytest`,
+        # `python -m pytest`, `flake8` — whether the command came from the plan or
+        # the runtime defaults, so a plan can't reintroduce "No module named X".
+        env_exports = None
+        if runtime.language == "python":
+            # /workspace first so project modules import (bare `pytest` does not
+            # add rootdir to sys.path the way `python -m pytest` does).
+            env_exports = [
+                f"export PYTHONPATH=/workspace:/workspace/{_PY_DEPS}",
+                f"export PATH=/workspace/{_PY_DEPS}/bin:$PATH",
+            ]
+
+        # Merge plan strategy with runtime defaults (plan commands take priority).
+        # EXCEPTION: for Python, always use the runtime default install — it is the
+        # only one that installs into .sandbox_deps (via --target) so deps survive
+        # into the test/lint containers. A plan install like `pip install -r
+        # requirements.txt` would drop deps into system site-packages and lose them,
+        # reintroducing "No module named pytest". Test/build/lint can still override.
+        if runtime.language == "python":
+            install_cmds = runtime.install_commands
+        else:
+            install_cmds = strategy.get("install") or runtime.install_commands
         build_cmds = strategy.get("build") or runtime.build_commands
         test_cmds = strategy.get("test") or runtime.test_commands
         lint_cmds = runtime.lint_commands  # always use runtime defaults for lint
@@ -618,6 +658,7 @@ class SandboxExecutor:
                 network_mode=network,
                 label="install",
                 extract_workspace=True,
+                env_exports=env_exports,
             )
             if install_results:
                 r = install_results[0]
@@ -644,6 +685,7 @@ class SandboxExecutor:
                 timeout=self.config.timeout_build,
                 network_mode="none",
                 label="build",
+                env_exports=env_exports,
             )
             if build_results:
                 r = build_results[0]
@@ -671,6 +713,7 @@ class SandboxExecutor:
                 timeout=self.config.timeout_test,
                 network_mode="none",
                 label="test",
+                env_exports=env_exports,
             )
 
         def _run_lint():
@@ -684,6 +727,7 @@ class SandboxExecutor:
                 timeout=self.config.timeout_lint,
                 network_mode="none",
                 label="lint",
+                env_exports=env_exports,
             )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
