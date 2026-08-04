@@ -13,6 +13,11 @@ interface StreamingChunk {
   content: string;
 }
 
+// Bounds that keep a long-running session from growing state without limit.
+const MAX_STREAM_CHARS = 20_000;   // live preview tail; full text is persisted server-side
+const MAX_SANDBOX_PHASES = 40;     // phases across a run
+const MAX_SPEC_PROJECTS = 5;       // projects retained in the live spec-layer map
+
 interface AppStore {
   projects: ProjectSummary[];
   setProjects: (projects: ProjectSummary[]) => void;
@@ -90,10 +95,16 @@ export const useStore = create<AppStore>((set) => ({
   appendChunk: (project, agent, chunk) =>
     set((state) => {
       const prev = state.streamingChunk;
-      if (prev && prev.project === project && prev.agent === agent) {
-        return { streamingChunk: { project, agent, content: prev.content + chunk } };
+      const base =
+        prev && prev.project === project && prev.agent === agent ? prev.content : "";
+      let content = base + chunk;
+      // Keep only the trailing window — this is a live preview; the full text is
+      // persisted server-side and re-fetched into the conversation on completion.
+      // Prevents an unbounded string (and unbounded markdown re-parse) on long gens.
+      if (content.length > MAX_STREAM_CHARS) {
+        content = content.slice(content.length - MAX_STREAM_CHARS);
       }
-      return { streamingChunk: { project, agent, content: chunk } };
+      return { streamingChunk: { project, agent, content } };
     }),
   clearStreamingChunk: () => set({ streamingChunk: null }),
 
@@ -105,7 +116,7 @@ export const useStore = create<AppStore>((set) => ({
   sandboxPhases: [],
   addSandboxPhase: (phase) =>
     set((state) => ({
-      sandboxPhases: [...state.sandboxPhases, phase],
+      sandboxPhases: [...state.sandboxPhases.slice(-(MAX_SANDBOX_PHASES - 1)), phase],
     })),
   clearSandboxPhases: () => set({ sandboxPhases: [] }),
   sandboxActive: null,
@@ -144,7 +155,15 @@ export const useStore = create<AppStore>((set) => ({
             : existing.status;
         next[idx] = { ...existing, status, snippet: layer.snippet ?? existing.snippet };
       }
-      return { specLayers: { ...state.specLayers, [project]: next } };
+      const map = { ...state.specLayers, [project]: next };
+      // Evict oldest projects so the live-layer map stays bounded across a session.
+      const keys = Object.keys(map);
+      if (keys.length > MAX_SPEC_PROJECTS) {
+        for (const k of keys.slice(0, keys.length - MAX_SPEC_PROJECTS)) {
+          if (k !== project) delete map[k];
+        }
+      }
+      return { specLayers: map };
     }),
   clearSpecLayers: (project) =>
     set((state) => ({ specLayers: { ...state.specLayers, [project]: [] } })),

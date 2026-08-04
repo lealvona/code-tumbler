@@ -47,9 +47,16 @@ export function useSSE() {
         reconnectTimer.current = setTimeout(connect, 5000);
       };
 
+      // When the tab is hidden, skip the cosmetic high-frequency live-preview
+      // events (chunk/thinking/spec_layer). They only drive on-screen animations;
+      // the real state is restored by the refetch that runs when the tab returns.
+      // Lightweight status events (phase_change, score, complete) still process.
+      const hidden = () => typeof document !== "undefined" && document.hidden;
+
       // High-frequency streaming events — routed directly to store,
       // bypassing the events array to prevent overflow.
       es.addEventListener("conversation_chunk", (e: MessageEvent) => {
+        if (hidden()) return;
         try {
           const event: SSEEvent = JSON.parse(e.data);
           const project = event.data?.project as string;
@@ -62,6 +69,7 @@ export function useSSE() {
       });
 
       es.addEventListener("agent_thinking", (e: MessageEvent) => {
+        if (hidden()) return;
         try {
           const event: SSEEvent = JSON.parse(e.data);
           const project = event.data?.project as string;
@@ -117,6 +125,7 @@ export function useSSE() {
       // Phase-1 spec generation — live YAML-layer index (high frequency, routed
       // straight to the store like conversation_chunk).
       es.addEventListener("spec_layer", (e: MessageEvent) => {
+        if (hidden()) return;
         try {
           const event: SSEEvent = JSON.parse(e.data);
           const project = event.data?.project as string;

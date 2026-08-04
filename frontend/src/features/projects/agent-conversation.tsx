@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import { usePolling } from "@/hooks/use-polling";
 import type { ConversationMessage, SSEEvent, SandboxPhaseEvent } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -146,7 +147,9 @@ function StreamingContent({
   const [done, setDone] = useState(!isNew);
 
   useEffect(() => {
-    if (!isNew) {
+    // Skip the typewriter animation for non-new or large messages — animating a
+    // big message re-parses markdown ~200× and pins the CPU. Render it at once.
+    if (!isNew || content.length > 3000) {
       setDisplayed(content);
       setDone(true);
       return;
@@ -430,14 +433,14 @@ export function AgentConversation({
       .catch(() => {});
   }, [projectName, setConversationCache]);
 
-  // Fetch on mount and periodically when running (but not while streaming)
+  // Initial fetch on mount / project change.
   useEffect(() => {
     fetchConversation();
-    if (isRunning && !activeStreaming) {
-      const interval = setInterval(fetchConversation, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [projectName, isRunning, activeStreaming, fetchConversation]);
+  }, [fetchConversation]);
+
+  // Periodic refetch only while running and not actively streaming — and paused
+  // when the tab is hidden (SSE + this poll won't run in the background).
+  usePolling(fetchConversation, 3000, isRunning && !activeStreaming);
 
   // Refetch conversation when a conversation_update event arrives for this project
   useEffect(() => {

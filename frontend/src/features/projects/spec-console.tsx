@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import { usePolling } from "@/hooks/use-polling";
 import type { SpecInfo, SpecLayer, SpecLayerStatus } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,12 +64,8 @@ export function SpecConsole({
     loadInfo();
   }, [loadInfo]);
 
-  // Poll while the spec is being generated so the file list fills in.
-  useEffect(() => {
-    if (!isRunning) return;
-    const t = setInterval(loadInfo, 3000);
-    return () => clearInterval(t);
-  }, [isRunning, loadInfo]);
+  // Poll while the spec is being generated (paused when the tab is hidden).
+  usePolling(loadInfo, 3000, isRunning);
 
   // Merge the required order, files on disk, and the live streaming layers into
   // one ordered list of rows with a resolved status.

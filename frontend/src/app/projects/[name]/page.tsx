@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import type { ProjectStatus } from "@/lib/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,21 +44,22 @@ export default function ProjectDetailPage() {
   const router = useRouter();
   const { toast } = useToast();
 
-  function refresh() {
-    api.getProjectStatus(name).then(setStatus).catch(console.error);
-  }
+  const refresh = useCallback(() => {
+    api.getProjectStatus(name).then(setStatus).catch(() => {});
+  }, [name]);
 
+  // One-time config/providers (these don't change during a session).
   useEffect(() => {
-    refresh();
-    api.getUsage(name).then(setUsage).catch(() => {});
     api.getConfig().then(setConfig).catch(() => {});
     api.listProviders().then(setAllProviders).catch(() => {});
-    const interval = setInterval(() => {
-      refresh();
-      api.getUsage(name).then(setUsage).catch(() => {});
-    }, 5000);
-    return () => clearInterval(interval);
+  }, []);
+
+  // Recurring status + usage — paused while the tab is hidden.
+  const pollTick = useCallback(() => {
+    api.getProjectStatus(name).then(setStatus).catch(() => {});
+    api.getUsage(name).then(setUsage).catch(() => {});
   }, [name]);
+  usePolling(pollTick, 5000);
 
   async function handleStart() {
     setStarting(true);
