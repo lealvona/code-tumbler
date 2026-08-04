@@ -26,11 +26,11 @@ except ImportError:
 
 try:
     from .state_manager import StateManager, ProjectPhase
-    from ..agents import ArchitectAgent, EngineerAgent, VerifierAgent
+    from ..agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from ..utils.logger import get_logger
 except ImportError:
     from orchestrator.state_manager import StateManager, ProjectPhase
-    from agents import ArchitectAgent, EngineerAgent, VerifierAgent
+    from agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from utils.logger import get_logger
 
 
@@ -223,6 +223,7 @@ class Orchestrator:
         quality_threshold: float = 8.0,
         max_iterations: int = 10,
         max_cost_per_project: float = 0.0,
+        specifier: 'SpecifierAgent' = None,
     ):
         """Initialize the orchestrator.
 
@@ -234,8 +235,10 @@ class Orchestrator:
             quality_threshold: Minimum score to finalize project
             max_iterations: Maximum refinement iterations
             max_cost_per_project: Max cost in dollars (0 = unlimited)
+            specifier: Optional Phase-1 Specifier agent (idea -> YAML spec suite)
         """
         self.workspace_root = Path(workspace_root)
+        self.specifier = specifier
         self.architect = architect
         self.engineer = engineer
         self.verifier = verifier
@@ -356,6 +359,63 @@ class Orchestrator:
             with self._processing_lock:
                 self._processing_projects.discard(project_name)
 
+    def _read_spec_suite(self, project_path: Path) -> Optional[str]:
+        """Concatenate the Phase-1 YAML spec suite (if any) for the Architect.
+
+        Returns a single string with each file labelled by its relative path,
+        or None if no spec suite exists.
+        """
+        spec_dir = project_path / "spec"
+        if not spec_dir.exists():
+            return None
+        parts: List[str] = []
+        for f in sorted(spec_dir.rglob("*.yaml")):
+            try:
+                rel = f.relative_to(project_path).as_posix()
+                parts.append(f"### {rel}\n\n{f.read_text(encoding='utf-8')}")
+            except OSError:
+                continue
+        return "\n\n".join(parts) if parts else None
+
+    def _run_specifier(self, project_path: Path, state_mgr: StateManager):
+        """Run the Phase-1 Specifier agent: idea -> YAML spec suite.
+
+        No-op if no specifier is configured. Writes the suite under
+        `<project>/spec/` and an export archive to `.tumbler/spec_archive.json`.
+        """
+        if not self.specifier:
+            return
+
+        self.logger.info("Phase: SPECIFIER - Generating spec suite")
+        state_mgr.update_phase(ProjectPhase.SPECIFYING)
+
+        requirements_file = project_path / "01_input" / "requirements.txt"
+        if not requirements_file.exists():
+            raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
+        idea = requirements_file.read_text(encoding='utf-8')
+
+        compression_config = state_mgr.get_compression_config()
+        result = self.specifier.generate_spec(
+            idea=idea,
+            project_name=project_path.name,
+            project_root=project_path,
+            temperature=0.4,
+            compression_config=compression_config,
+        )
+
+        usage = self.specifier.get_total_usage()
+        state_mgr.log_usage(
+            agent='specifier',
+            input_tokens=usage['total_input_tokens'],
+            output_tokens=usage['total_output_tokens'],
+            cost=usage['total_cost'],
+            compression_metrics=self.specifier.last_compression_metrics or None,
+        )
+
+        if SpecifierAgent.is_complete(project_path):
+            state_mgr.set_spec_complete(True)
+        self.logger.info("Spec suite generated: %d files", len(result.get('files', {})))
+
     def _run_architect(self, project_path: Path, state_mgr: StateManager):
         """Run the Architect agent.
 
@@ -373,6 +433,10 @@ class Orchestrator:
 
         requirements = requirements_file.read_text(encoding='utf-8')
 
+        # Phase-1 spec suite (if the Specifier ran) — passed uncompressed so the
+        # normative YAML contract reaches the Architect verbatim.
+        spec = self._read_spec_suite(project_path)
+
         # Generate plan
         plan_file = project_path / "02_plan" / "PLAN.md"
         compression_config = state_mgr.get_compression_config()
@@ -380,6 +444,7 @@ class Orchestrator:
             requirements=requirements,
             project_name=project_path.name,
             output_path=plan_file,
+            spec=spec,
             temperature=0.3,
             compression_config=compression_config,
         )

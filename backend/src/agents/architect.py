@@ -86,6 +86,7 @@ class ArchitectAgent(BaseAgent):
         requirements = context.get('requirements', '')
         project_name = context.get('project_name', 'project')
         constraints = context.get('constraints', {})
+        spec = context.get('spec')
 
         # Build user message — context in <compress> markers, task instructions outside
         user_message = f"""<compress>
@@ -104,6 +105,20 @@ class ArchitectAgent(BaseAgent):
                 user_message += f"- **{key}**: {value}\n"
 
         user_message += "</compress>\n"
+
+        # Phase-1 specification suite — placed OUTSIDE <compress> because it is the
+        # normative, order-sensitive contract (same class as verification output).
+        if spec:
+            user_message += f"""
+# Specification Suite (authoritative)
+
+The Specifier has already produced a structured YAML specification for this
+project. Treat it as the source of truth and align your plan with it (data
+model, architecture, UI views, interchange, integrations, security posture):
+
+{spec}
+"""
+
         user_message += """
 # Your Task
 
@@ -129,6 +144,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
         project_name: str = "project",
         constraints: Dict[str, Any] = None,
         output_path: Path = None,
+        spec: str = None,
         **kwargs
     ) -> str:
         """Generate a project plan from requirements.
@@ -138,6 +154,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
             project_name: Name of the project
             constraints: Optional constraints (budget, time, etc.)
             output_path: Where to save PLAN.md (optional)
+            spec: Optional Phase-1 YAML specification suite (authoritative context)
             **kwargs: Additional LLM parameters
 
         Returns:
@@ -147,6 +164,7 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
             'requirements': requirements,
             'project_name': project_name,
             'constraints': constraints or {},
+            'spec': spec,
         }
 
         # Execute the agent

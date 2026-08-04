@@ -16,6 +16,12 @@ try:
 except ImportError:
     from ..providers.base import ProviderConfig, ProviderType
 
+# Canonical, ordered list of agent roles in the tumbling lifecycle. This is the
+# single source of truth for role names — validation, provider resolution, and
+# UI all reference it, so adding a new agent (e.g. a future "reviewer") is a
+# one-line change here plus its construction in the orchestrator/launcher.
+AGENT_ROLES = ("specifier", "architect", "engineer", "verifier")
+
 
 @dataclass
 class PromptCompressionConfig:

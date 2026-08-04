@@ -4,6 +4,7 @@ import type {
   SSEEvent,
   SandboxPhaseEvent,
   ConversationMessage,
+  SpecLayer,
 } from "./types";
 
 interface StreamingChunk {
@@ -43,6 +44,11 @@ interface AppStore {
   // Conversation cache — persists messages across tab switches
   conversationCache: Record<string, ConversationMessage[]>;
   setConversationCache: (project: string, messages: ConversationMessage[]) => void;
+
+  // Phase-1 spec generation — live animated YAML-layer index per project
+  specLayers: Record<string, SpecLayer[]>;
+  applySpecLayer: (project: string, layer: SpecLayer) => void;
+  clearSpecLayers: (project: string) => void;
 
   connected: boolean;
   setConnected: (connected: boolean) => void;
@@ -118,6 +124,30 @@ export const useStore = create<AppStore>((set) => ({
       }
       return { conversationCache: cache };
     }),
+
+  specLayers: {},
+  applySpecLayer: (project, layer) =>
+    set((state) => {
+      const cur = state.specLayers[project] ?? [];
+      const idx = cur.findIndex((l) => l.path === layer.path);
+      // Rank prevents a late "writing" from downgrading a "done" row.
+      const rank: Record<string, number> = { pending: 0, start: 1, writing: 2, done: 3 };
+      let next: SpecLayer[];
+      if (idx === -1) {
+        next = [...cur, layer];
+      } else {
+        next = cur.slice();
+        const existing = next[idx];
+        const status =
+          (rank[layer.status] ?? 0) >= (rank[existing.status] ?? 0)
+            ? layer.status
+            : existing.status;
+        next[idx] = { ...existing, status, snippet: layer.snippet ?? existing.snippet };
+      }
+      return { specLayers: { ...state.specLayers, [project]: next } };
+    }),
+  clearSpecLayers: (project) =>
+    set((state) => ({ specLayers: { ...state.specLayers, [project]: [] } })),
 
   connected: false,
   setConnected: (connected) => set({ connected }),

@@ -19,6 +19,7 @@ class ProviderType(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
+    CLAUDE_CLI = "claude_cli"  # local `claude` CLI (Claude Code) as a text backend
 
 
 @dataclass

@@ -51,6 +51,20 @@ const AGENT_CONFIG: Record<
     ring: "ring-slate-400",
     prose: "prose-slate",
   },
+  specifier: {
+    label: "Specifier",
+    icon: "\ud83d\udcdc",
+    bg: "bg-purple-50 dark:bg-purple-950/40",
+    border:
+      "border-l-4 border-l-purple-500 dark:border-l-purple-400 border border-purple-200 dark:border-purple-800",
+    text: "text-purple-950 dark:text-purple-100",
+    accent: "text-purple-600 dark:text-purple-400",
+    headerBg: "bg-purple-100/80 dark:bg-purple-900/40",
+    badgeBg: "bg-purple-600 dark:bg-purple-500",
+    badgeText: "text-white",
+    ring: "ring-purple-400",
+    prose: "prose-purple",
+  },
   architect: {
     label: "Architect",
     icon: "\ud83d\udcd0",

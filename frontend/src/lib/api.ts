@@ -11,6 +11,7 @@ import type {
   CostByProvider,
   CostPerIteration,
   ConversationMessage,
+  SpecInfo,
 } from "./types";
 
 /** Build the backend base URL, bypassing the Next.js rewrite proxy. */
@@ -101,6 +102,29 @@ export const api = {
 
   getConversation: (name: string) =>
     fetchJSON<ConversationMessage[]>(`/api/projects/${name}/conversation`),
+
+  // ── Phase-1 spec suite ──────────────────────────────────────────────
+  getSpec: (name: string) => fetchJSON<SpecInfo>(`/api/projects/${name}/spec`),
+
+  getSpecFile: (name: string, filePath: string) =>
+    fetchJSON<{ path: string; content: string; size: number }>(
+      `/api/projects/${name}/spec/${filePath}`
+    ),
+
+  saveSpecFile: (name: string, filePath: string, content: string) =>
+    fetchJSON<{ status: string; path: string; size: number }>(
+      `/api/projects/${name}/spec/${filePath}`,
+      { method: "PUT", body: JSON.stringify({ content }) }
+    ),
+
+  exportSpec: (name: string) =>
+    fetchJSON<Record<string, unknown>>(`/api/projects/${name}/spec/export`),
+
+  importSpec: (name: string, archive: Record<string, unknown>) =>
+    fetchJSON<{ status: string; files: number; complete: boolean }>(
+      `/api/projects/${name}/spec/import`,
+      { method: "POST", body: JSON.stringify(archive) }
+    ),
 
   getProjectProviders: (name: string) =>
     fetchJSON<ProjectProviders>(`/api/projects/${name}/providers`),

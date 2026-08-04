@@ -6,6 +6,7 @@ from .vllm import VLLMProvider
 from .openai_provider import OpenAIProvider
 from .anthropic_provider import AnthropicProvider
 from .gemini import GeminiProvider
+from .claude_cli import ClaudeCLIProvider
 
 __all__ = [
     "LLMProvider",
@@ -16,4 +17,5 @@ __all__ = [
     "OpenAIProvider",
     "AnthropicProvider",
     "GeminiProvider",
+    "ClaudeCLIProvider",
 ]

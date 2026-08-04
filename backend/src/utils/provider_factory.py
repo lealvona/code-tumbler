@@ -1,6 +1,9 @@
 """Provider factory - creates LLM provider instances from configuration."""
 
-from providers import OllamaProvider, OpenAIProvider, VLLMProvider, AnthropicProvider, GeminiProvider
+from providers import (
+    OllamaProvider, OpenAIProvider, VLLMProvider, AnthropicProvider,
+    GeminiProvider, ClaudeCLIProvider,
+)
 from providers.base import ProviderConfig, ProviderType, LLMProvider
 
 
@@ -26,5 +29,7 @@ def create_provider(provider_config: ProviderConfig) -> LLMProvider:
         return AnthropicProvider(provider_config)
     elif provider_config.type == ProviderType.GEMINI:
         return GeminiProvider(provider_config)
+    elif provider_config.type == ProviderType.CLAUDE_CLI:
+        return ClaudeCLIProvider(provider_config)
     else:
         raise ValueError(f"Unsupported provider type: {provider_config.type}")

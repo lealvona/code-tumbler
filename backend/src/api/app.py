@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     workspace = Path(app.state.config.workspace.base_path)
     if not workspace.is_absolute():
         workspace = backend_root / workspace
-    seed_demo_project(workspace.resolve())
+    seed_demo_project(workspace.resolve(), active_provider=app.state.config.active_provider)
 
     # Register route modules
     app.include_router(health.router, prefix="/api")

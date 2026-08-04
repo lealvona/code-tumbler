@@ -1,10 +1,31 @@
 export type ProjectPhase =
   | "idle"
+  | "specifying"
   | "planning"
   | "engineering"
   | "verifying"
   | "completed"
   | "failed";
+
+export type SpecLayerStatus = "pending" | "start" | "writing" | "done";
+
+export interface SpecLayer {
+  path: string;
+  status: SpecLayerStatus;
+  snippet?: string;
+}
+
+export interface SpecFileMeta {
+  path: string;
+  size: number;
+}
+
+export interface SpecInfo {
+  enabled: boolean;
+  complete: boolean;
+  required: string[];
+  files: SpecFileMeta[];
+}
 
 export interface ProjectSummary {
   name: string;
@@ -132,7 +153,7 @@ export interface CostPerIteration {
 
 export interface ConversationMessage {
   timestamp: string;
-  agent: "architect" | "engineer" | "verifier" | "system";
+  agent: "specifier" | "architect" | "engineer" | "verifier" | "system";
   role: "input" | "output" | "error" | "status" | "sandbox";
   iteration: number;
   content: string;

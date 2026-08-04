@@ -220,6 +220,16 @@ class BaseAgent(ABC):
                 f"- {budget.safety_margin} safety = {budget.available_input} available). "
                 f"Truncating messages to fit."
             )
+            # The Phase-1 spec suite rides in the longest user message — exactly what
+            # _truncate_messages cuts. Warn loudly: truncating it corrupts the
+            # normative YAML mid-file. Prefer a larger-context model for the
+            # architect/specifier if this fires.
+            if any("Specification Suite (authoritative)" in m.get("content", "") for m in messages):
+                logger.warning(
+                    f"{self.name}: input includes the authoritative spec suite and is being "
+                    f"truncated to fit a {budget.context_length}-token context — the spec YAML "
+                    f"may be corrupted mid-file. Use a larger-context provider for this agent."
+                )
             messages = self._truncate_messages(messages, budget)
             # Recalculate input tokens after truncation so clamping uses the correct value
             input_tokens = self._token_counter.estimate_messages_tokens(messages, ptype)

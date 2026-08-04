@@ -33,11 +33,14 @@ class APIOrchestrator(Orchestrator):
         if self._config is None:
             return
         overrides = state_mgr.get_provider_overrides()
-        for agent_name, agent_obj in [
+        agents = [
             ("architect", self.architect),
             ("engineer", self.engineer),
             ("verifier", self.verifier),
-        ]:
+        ]
+        if self.specifier is not None:
+            agents.insert(0, ("specifier", self.specifier))
+        for agent_name, agent_obj in agents:
             provider_config = resolve_agent_provider(self._config, agent_name, overrides)
             current_name = getattr(agent_obj.provider, '_resolved_name', None)
             if current_name != provider_config.name:
@@ -108,6 +111,146 @@ class APIOrchestrator(Orchestrator):
         on_chunk._flush = flush
         on_chunk._get_full_content = get_full_content
         return on_chunk
+
+    def _make_spec_scanner(self, project_path: Path):
+        """Create a streaming-JSON scanner that emits `spec_layer` SSE events.
+
+        Drives the animated YAML-layer index in the UI from the ACTUAL bytes the
+        model emits (no simulated progress): as each file's `"path"` value closes
+        we emit status=start; while its `"content"` value streams we emit
+        status=writing with a tail snippet; when it closes we emit status=done.
+
+        The authoritative file set still comes from the Specifier's final parse —
+        this scanner is presentation only, so it stays defensive and never raises.
+        """
+        state = {
+            "in_string": False,
+            "escape": False,
+            "buf": [],
+            "value_key": None,        # key this string is the value of (None = it's a key)
+            "pending_key": None,      # last completed key awaiting its value
+            "last_key_candidate": None,
+            "current_path": None,
+            "last_writing_emit": [0.0],
+        }
+
+        def emit(path, status, snippet=""):
+            self.event_bus.publish("spec_layer", {
+                "project": project_path.name,
+                "path": path,
+                "status": status,
+                "snippet": snippet,
+            })
+
+        def feed(chunk: str):
+            import time
+            try:
+                for c in chunk:
+                    if state["in_string"]:
+                        if state["escape"]:
+                            state["buf"].append(c)
+                            state["escape"] = False
+                        elif c == "\\":
+                            state["escape"] = True
+                        elif c == '"':
+                            # string closes
+                            value = "".join(state["buf"])
+                            state["in_string"] = False
+                            if state["value_key"] == "path":
+                                state["current_path"] = value
+                                emit(value, "start")
+                            elif state["value_key"] == "content":
+                                emit(state["current_path"], "done")
+                            elif state["value_key"] is None:
+                                state["last_key_candidate"] = value
+                            state["value_key"] = None
+                        else:
+                            state["buf"].append(c)
+                            if state["value_key"] == "content" and state["current_path"]:
+                                now = time.monotonic()
+                                if now - state["last_writing_emit"][0] >= 0.15:
+                                    state["last_writing_emit"][0] = now
+                                    tail = "".join(state["buf"])[-60:]
+                                    emit(state["current_path"], "writing", tail)
+                    else:
+                        if c == '"':
+                            state["in_string"] = True
+                            state["buf"] = []
+                            state["value_key"] = state["pending_key"]
+                            state["pending_key"] = None
+                        elif c == ":":
+                            state["pending_key"] = state["last_key_candidate"]
+                            state["last_key_candidate"] = None
+                        elif c in "{[":
+                            state["pending_key"] = None
+            except Exception:
+                pass  # presentation-only; never break generation
+
+        return feed
+
+    def _run_specifier(self, project_path: Path, state_mgr: StateManager):
+        """Phase 1: idea -> YAML spec suite, with live SSE (layer index + tokens)."""
+        self.event_bus.publish("phase_change", {
+            "project": project_path.name,
+            "phase": "specifying",
+        })
+        self.event_bus.publish("log", {
+            "project": project_path.name,
+            "message": "Specifier agent started - generating spec suite...",
+            "level": "info",
+        })
+
+        req_file = project_path / "01_input" / "requirements.txt"
+        if req_file.exists():
+            state_mgr.log_conversation(
+                agent="system", role="input", iteration=0,
+                content=req_file.read_text(encoding="utf-8"),
+                metadata={"label": "App Idea"},
+            )
+            self._publish_conversation_update(project_path, "system")
+
+        self._publish_thinking(project_path, "specifier")
+
+        chunk_cb = self._make_chunk_callback(project_path, "specifier")
+        scanner = self._make_spec_scanner(project_path)
+
+        def combined(chunk: str):
+            chunk_cb(chunk)
+            scanner(chunk)
+
+        self.specifier._on_chunk = combined
+        try:
+            super()._run_specifier(project_path, state_mgr)
+        except Exception as e:
+            state_mgr.log_conversation(
+                agent="specifier", role="error", iteration=0,
+                content=f"Specifier agent failed: {e}",
+                metadata={"label": "Error"},
+            )
+            self._publish_conversation_update(project_path, "specifier")
+            raise
+        finally:
+            chunk_cb._flush()
+            self.specifier._on_chunk = None
+
+        llm_response = chunk_cb._get_full_content()
+        if llm_response:
+            state_mgr.log_conversation(
+                agent="specifier", role="output", iteration=0,
+                content=llm_response,
+                metadata={"label": "Specification Suite"},
+            )
+            self._publish_conversation_update(project_path, "specifier")
+
+        self.event_bus.publish("phase_change", {
+            "project": project_path.name,
+            "phase": "specifying_complete",
+        })
+        self.event_bus.publish("log", {
+            "project": project_path.name,
+            "message": "Specifier agent completed - spec suite created",
+            "level": "info",
+        })
 
     def _run_architect(self, project_path: Path, state_mgr: StateManager):
         self.event_bus.publish("phase_change", {
@@ -524,9 +667,16 @@ class APIOrchestrator(Orchestrator):
             return
 
         try:
-            # Phase 1: Architect (skip if resuming with existing plan)
+            # Phase 1: Specifier (idea -> YAML spec suite), then Architect.
+            # Both are skipped when resuming from an existing plan. The Specifier
+            # is additionally skipped if disabled or already complete (idempotent
+            # on restart after a mid-run crash).
             if not resuming:
                 self._refresh_providers(state_mgr)
+                if (self.specifier is not None
+                        and state_mgr.is_spec_enabled()
+                        and not state_mgr.is_spec_complete()):
+                    self._run_specifier(project_path, state_mgr)
                 self._run_architect(project_path, state_mgr)
 
             # Phase 2-3: Engineer -> Verifier loop

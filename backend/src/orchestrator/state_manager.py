@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Subdirectories that full_reset() is allowed to clear.
 # Any directory not in this set will be refused.
 _CLEARABLE_PROJECT_SUBDIRS = frozenset({
+    "spec",        # Phase-1 Specifier output (generated YAML suite)
     "02_plan",
     "03_staging",
     "04_feedback",
@@ -31,6 +32,7 @@ _CLEARABLE_STATE_SUBDIRS = frozenset({
 class ProjectPhase(Enum):
     """Phases in the project lifecycle."""
     IDLE = "idle"
+    SPECIFYING = "specifying"   # Phase 1: idea -> YAML spec suite
     PLANNING = "planning"
     ENGINEERING = "engineering"
     VERIFYING = "verifying"
@@ -617,7 +619,11 @@ class StateManager:
                 'enabled': True,
                 'rate': 0.5,
                 'preserve_code_blocks': True,
-            }
+            },
+            'spec': {
+                'enabled': True,   # run the Phase-1 Specifier before the Architect
+                'complete': False,
+            },
         }
 
     def get_compression_config(self) -> Dict[str, Any]:
@@ -655,6 +661,33 @@ class StateManager:
         """
         state = self.load_state()
         return state.get('verification', {})
+
+    def get_spec_config(self) -> Dict[str, Any]:
+        """Get Phase-1 spec configuration for this project."""
+        state = self.load_state()
+        return state.get('spec', {'enabled': True, 'complete': False})
+
+    def is_spec_enabled(self) -> bool:
+        return bool(self.get_spec_config().get('enabled', True))
+
+    def is_spec_complete(self) -> bool:
+        return bool(self.get_spec_config().get('complete', False))
+
+    def set_spec_complete(self, complete: bool = True) -> None:
+        """Mark the Phase-1 spec suite as complete (or not)."""
+        state = self.load_state()
+        spec = state.get('spec', {'enabled': True, 'complete': False})
+        spec['complete'] = complete
+        state['spec'] = spec
+        self.save_state(state)
+
+    def set_spec_config(self, config: Dict[str, Any]) -> None:
+        """Update Phase-1 spec configuration (e.g. enable/disable)."""
+        state = self.load_state()
+        current = state.get('spec', {'enabled': True, 'complete': False})
+        current.update(config)
+        state['spec'] = current
+        self.save_state(state)
 
     def get_project_name(self) -> str:
         """Get project name from path.

@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PhaseIndicator } from "@/features/projects/phase-indicator";
+import { SpecConsole } from "@/features/projects/spec-console";
 import { ArtifactBrowser } from "@/features/projects/artifact-browser";
 import { ProjectProviderConfig } from "@/features/projects/project-providers";
 import { AgentConversation } from "@/features/projects/agent-conversation";
@@ -218,6 +219,7 @@ export default function ProjectDetailPage() {
       <Tabs defaultValue="conversation">
         <TabsList>
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
+          <TabsTrigger value="spec">Spec</TabsTrigger>
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
@@ -230,6 +232,10 @@ export default function ProjectDetailPage() {
             isRunning={status.is_running}
             key={resetKey}
           />
+        </TabsContent>
+
+        <TabsContent value="spec" className="mt-4">
+          <SpecConsole projectName={name} isRunning={status.is_running} />
         </TabsContent>
 
         <TabsContent value="status" className="mt-4">
