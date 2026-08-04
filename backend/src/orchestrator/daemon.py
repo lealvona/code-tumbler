@@ -528,10 +528,18 @@ class Orchestrator:
                 skip_ext = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
                             '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff',
                             '.woff2', '.ttf', '.eot', '.zip', '.tar', '.gz'}
+                # Installed-dependency dirs persisted by the sandbox install phase.
+                # These are NOT the engineer's code — reading them would flood the
+                # refinement prompt with hundreds of vendored files.
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                             '.venv', 'venv', '.git', 'dist', 'build'}
                 max_file_size = 50_000  # 50KB per file
 
                 for file_path in staging_dir.rglob('*'):
                     if file_path.is_file() and file_path.name != '.manifest.json':
+                        rel_parts = file_path.relative_to(staging_dir).parts
+                        if any(part in skip_dirs for part in rel_parts[:-1]):
+                            continue
                         if file_path.suffix.lower() in skip_ext:
                             continue
                         rel_path = file_path.relative_to(staging_dir)
@@ -957,13 +965,23 @@ class Orchestrator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         archive_name = f"{project_path.name}_{timestamp}"
 
-        # Create zip archive
+        # Create zip archive of the DELIVERABLE only — exclude installed-dependency
+        # dirs persisted by the sandbox (.sandbox_deps, node_modules, ...) and the
+        # verifier's trigger file. Consumers reinstall deps from the manifests.
+        import zipfile
+        exclude_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                        '.venv', 'venv', '.git', 'dist', 'build'}
         archive_path = final_dir / f"{archive_name}.zip"
-        shutil.make_archive(
-            str(final_dir / archive_name),
-            'zip',
-            staging_dir
-        )
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(staging_dir.rglob('*')):
+                if not file_path.is_file():
+                    continue
+                rel = file_path.relative_to(staging_dir)
+                if any(part in exclude_dirs for part in rel.parts[:-1]):
+                    continue
+                if rel.name == '.manifest.json':
+                    continue
+                zf.write(file_path, rel.as_posix())
 
         self.logger.info(f"✓ Project archived to: {archive_path}")
 
