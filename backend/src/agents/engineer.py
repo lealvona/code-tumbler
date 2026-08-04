@@ -562,10 +562,12 @@ Output as a JSON array:
                 response = response[first_newline + 1:].strip()
 
         # Strategy 1: Try parsing as-is
+        # (ValueError included: a parsed-but-wrong shape should still fall through
+        # to the regex strategy rather than aborting the whole parse.)
         try:
             files_array = json.loads(response)
             return self._convert_to_file_dict(files_array)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
         # Strategy 2: Fix common issues with Python docstrings in JSON
@@ -576,7 +578,7 @@ Output as a JSON array:
             fixed = response.replace('\\"\\"\\"', '\\\\"\\\\"\\\\"')  # """ -> \"\"\"
             files_array = json.loads(fixed)
             return self._convert_to_file_dict(files_array)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
         # Strategy 3: Parse file-by-file using regex
@@ -588,6 +590,18 @@ Output as a JSON array:
 
     def _convert_to_file_dict(self, files_array: Any) -> Dict[str, str]:
         """Convert parsed JSON array to file dictionary."""
+        # response_format=json_object forces an OBJECT — models then wrap the
+        # array, e.g. {"files": [...]}. Unwrap before validating.
+        if isinstance(files_array, dict):
+            for key in ("files", "Files", "FILES"):
+                if isinstance(files_array.get(key), list):
+                    files_array = files_array[key]
+                    break
+            else:
+                lists = [v for v in files_array.values() if isinstance(v, list)]
+                if len(lists) == 1:
+                    files_array = lists[0]
+
         if not isinstance(files_array, list):
             raise ValueError("Expected JSON array of files")
 
