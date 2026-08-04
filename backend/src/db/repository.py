@@ -30,7 +30,7 @@ class ProjectRepository:
         project.current_phase = state.get("current_phase", "idle")
         project.current_iteration = state.get("iteration", 0)
         project.max_iterations = state.get("max_iterations", 10)
-        project.quality_threshold = state.get("quality_threshold", 8.0)
+        project.quality_threshold = state.get("quality_threshold", 80.0)
         project.last_score = state.get("last_score")
         project.provider = state.get("provider")
         project.model = state.get("model")

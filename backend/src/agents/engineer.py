@@ -98,8 +98,8 @@ Generate ONLY the following files in this request:
 
 Do NOT generate files not in this list. Other files will be generated in separate requests.
 
-Output as a JSON array (only the files listed above):
-[{{"path": "...", "content": "..."}}, ...]
+Output a single JSON object with a "files" array (only the files listed above):
+{{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
         else:
             chunk_task = None
@@ -120,7 +120,7 @@ This is **iteration 1** - implement the project from scratch according to the pl
                 user_message += chunk_task
             else:
                 user_message += """
-Generate ALL files specified in the plan as a JSON array. Each file should have:
+Generate ALL files specified in the plan. Each file should have:
 - `path`: Relative path from project root
 - `content`: Complete file content
 
@@ -131,10 +131,10 @@ Ensure:
 4. All configuration files are complete
 5. Code is production-ready
 
-Output pure JSON (no markdown fences):
-```json
-[{{"path": "...", "content": "..."}}, ...]
-```
+Output a single pure JSON object (no markdown fences, no prose). The top-level
+value MUST be an object with one key "files" (strict JSON modes require an
+object, not a bare array):
+{{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
         else:
             # Refinement iteration - include actual previous code for context
@@ -193,8 +193,9 @@ Focus on:
 
 Generate the COMPLETE file tree again as JSON (even files that didn't change).
 
-Output as a JSON array:
-[{{"path": "...", "content": "..."}}, ...]
+Output a single pure JSON object with a "files" array containing the COMPLETE
+updated file set:
+{{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
 
         # Inject "Rules & Lessons Learned" just before the task instructions,
@@ -526,10 +527,71 @@ Output as a JSON array:
 
             files = all_files
 
+        # Completeness gate: one bounded, targeted pass when the generated set is
+        # missing critical files (dependency manifest, tests, or planned files).
+        # Models frequently truncate/omit on large plans; a small "generate ONLY
+        # these" request is far more reliable than hoping the next full iteration
+        # fixes it — and cheaper than burning a verify cycle on incomplete code.
+        try:
+            files = self._ensure_critical_files(plan, files, iteration, feedback, **kwargs)
+        except Exception as e:
+            logger.warning(f"Completeness pass failed (continuing with generated set): {e}")
+
         # Write files if output_dir provided
         if output_dir:
             self._write_files(files, output_dir)
 
+        return files
+
+    # Dependency-manifest filenames per supported runtime
+    _MANIFEST_NAMES = ("requirements.txt", "pyproject.toml", "package.json",
+                       "go.mod", "Cargo.toml", "pom.xml")
+
+    @staticmethod
+    def _is_test_path(path: str) -> bool:
+        p = path.lower()
+        name = p.rsplit("/", 1)[-1]
+        return (p.startswith("tests/") or "/tests/" in p or "/test/" in p
+                or name.startswith("test_") or name.endswith("_test.py")
+                or ".test." in name or ".spec." in name)
+
+    def _ensure_critical_files(self, plan: str, files: Dict[str, str],
+                               iteration: int, feedback: Optional[str],
+                               **kwargs) -> Dict[str, str]:
+        """One bounded completion request for critical/planned files that are
+        missing from the generated set. Never overwrites files already produced.
+        """
+        if not files:
+            return files
+
+        planned = self._extract_planned_files(plan) or []
+        missing_planned = [p for p in planned if p not in files]
+        has_manifest = any(f.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for f in files)
+        has_tests = any(self._is_test_path(f) for f in files)
+
+        if has_manifest and has_tests and not missing_planned:
+            return files  # complete — no extra call
+
+        targets = list(missing_planned[:15])  # bounded
+        if not has_manifest and not any(t.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for t in targets):
+            targets.append("the project's dependency manifest (e.g. requirements.txt or pyproject.toml)")
+        if not has_tests and not any(self._is_test_path(t) for t in targets if "/" in t or t.endswith(".py")):
+            targets.append("a tests/ suite that actually exercises the generated code")
+        if not targets:
+            return files
+
+        logger.info(
+            f"Completeness gate: {len(files)} files generated, requesting "
+            f"{len(targets)} missing item(s): {targets[:5]}{'...' if len(targets) > 5 else ''}"
+        )
+        extra = self._generate_chunk(
+            plan, iteration, feedback, files,   # previous_code=what exists already
+            targets, 1, 1, None, **kwargs,
+        )
+        added = {p: c for p, c in (extra or {}).items() if p not in files}
+        if added:
+            logger.info(f"Completeness gate added {len(added)} file(s): {sorted(added)[:8]}")
+            files = {**files, **added}
         return files
 
     def _parse_files_json(self, response: str) -> Dict[str, str]:

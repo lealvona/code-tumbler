@@ -298,7 +298,7 @@ function AgentBubble({
                     : "bg-red-600 text-white"
               }`}
             >
-              Score: {message.metadata.score}/10
+              Score: {message.metadata.score}/100
             </Badge>
           )}
           {message.metadata?.file_count !== undefined && (

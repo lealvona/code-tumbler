@@ -150,7 +150,7 @@ export default function ProjectDetailPage() {
             </span>
             {status.last_score !== null && (
               <span className="text-sm text-muted-foreground">
-                Score: {status.last_score}/10
+                Score: {status.last_score}/100
               </span>
             )}
           </div>
@@ -260,11 +260,11 @@ export default function ProjectDetailPage() {
                   {status.iteration} / {status.max_iterations}
                 </span>
                 <span className="text-muted-foreground">Quality Threshold</span>
-                <span>{status.quality_threshold}/10</span>
+                <span>{status.quality_threshold}/100</span>
                 <span className="text-muted-foreground">Last Score</span>
                 <span>
                   {status.last_score !== null
-                    ? `${status.last_score}/10`
+                    ? `${status.last_score}/100`
                     : "N/A"}
                 </span>
                 <span className="text-muted-foreground">Started</span>

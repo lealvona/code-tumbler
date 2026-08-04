@@ -63,7 +63,7 @@ export default function DashboardPage() {
                     <PhaseIndicator phase={project.status} />
                     {project.last_score !== null && (
                       <p className="text-xs text-muted-foreground mt-2">
-                        Score: {project.last_score}/10
+                        Score: {project.last_score}/100
                       </p>
                     )}
                   </CardContent>

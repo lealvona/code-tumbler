@@ -160,7 +160,7 @@ class StateManager:
         state = self.load_state()
         return state.get('last_score')
 
-    def is_complete(self, quality_threshold: float = 8.0, max_iterations: int = 10) -> bool:
+    def is_complete(self, quality_threshold: float = 80.0, max_iterations: int = 10) -> bool:
         """Check if project is complete (score threshold met or max iterations reached).
 
         Args:
@@ -607,7 +607,7 @@ class StateManager:
             'current_phase': ProjectPhase.IDLE.value,
             'iteration': 0,
             'max_iterations': 10,
-            'quality_threshold': 8.0,
+            'quality_threshold': 80.0,
             'start_time': datetime.utcnow().isoformat() + 'Z',
             'last_update': datetime.utcnow().isoformat() + 'Z',
             'last_score': None,

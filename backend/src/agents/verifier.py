@@ -251,7 +251,7 @@ Review the generated code and produce a quality report following the format in y
 4. Is the code well-structured and idiomatic?
 5. Are there any obvious bugs, missing error handling, or security issues?
 
-You MUST include an **Overall Score: X/10** line in your report.
+You MUST include an **Overall Score: X/100** line in your report.
 """
         else:
             user_message += """
@@ -365,12 +365,17 @@ Be objective, specific, and constructive.
             final_score = results.score
         else:
             # No automated verification ran AND LLM didn't produce a score
-            # (e.g. truncated response). Default to 5.0 = "needs human review"
-            # rather than 3.0 which forces wasteful re-iterations.
-            final_score = 5.0
+            # (e.g. truncated response). Default to 50 = "needs human review"
+            # rather than a low score which forces wasteful re-iterations.
+            final_score = 50.0
             logger.warning(
-                "No score from verification or LLM report — defaulting to 5.0"
+                "No score from verification or LLM report — defaulting to 50/100"
             )
+
+        # Stash the structured result so the orchestrator's plateau detector can
+        # compare real progress metrics (tests passed, files) — not just the score.
+        results.score = final_score
+        self.last_result = results
 
         # Save report if output_path provided
         if output_path:
@@ -518,54 +523,60 @@ Be objective, specific, and constructive.
             return results
 
     def _calculate_score(self, results: VerificationResult) -> Optional[float]:
-        """Calculate preliminary quality score from verification results.
+        """Calculate preliminary quality score (0-100) from verification results.
 
-        Uses a dual scoring model:
-          - Non-web apps: Build(3) + Tests(4) + Lint(2) + NoErrors(1) = 10
-          - Web apps:     Build(2) + Tests(2) + Lint(1) + NoErrors(1) + E2E(2) + Rubric(2) = 10
+        The 0-100 scale gives the feedback loop finer granularity than the old
+        0-10 integers, so incremental progress (e.g. 3 -> 5 passing tests) moves
+        the score instead of stalling the plateau detector.
+
+        Components:
+          - Non-web: Build(30) + Tests(40, needs tests to exist) + Lint(20) + NoErrors(10)
+          - Web:     Build(20) + Tests(20) + Lint(10) + NoErrors(10) + E2E(20) + Rubric(20)
+
+        A project with ZERO collected tests earns 0 of the test points — "no
+        tests" must never score like "tests pass".
 
         Returns None when no verification commands ran (code_review_only).
         """
         if results.code_review_only:
             return None  # defer to LLM code review
 
+        def lint_points(full: float) -> float:
+            if results.lint_issues == 0:
+                return full
+            if results.lint_issues < 5:
+                return full * 0.5
+            return 0.0
+
         # Web app scoring (has E2E results)
         if results.e2e_tests_total > 0:
             score = 0.0
             if results.build_success:
-                score += 2.0
+                score += 20.0
             if results.tests_total > 0:
-                score += (results.tests_passed / results.tests_total) * 2.0
-            if results.lint_issues == 0:
-                score += 1.0
-            elif results.lint_issues < 5:
-                score += 0.5
+                score += (results.tests_passed / results.tests_total) * 20.0
+            score += lint_points(10.0)
             if not results.errors:
-                score += 1.0
-            # E2E tests: 2 points
-            score += (results.e2e_tests_passed / results.e2e_tests_total) * 2.0
-            # Spec completeness: 2 points
+                score += 10.0
+            score += (results.e2e_tests_passed / results.e2e_tests_total) * 20.0
             if results.rubric_items_total > 0:
-                score += (results.rubric_items_verified / results.rubric_items_total) * 2.0
-            return min(10.0, score)
+                score += (results.rubric_items_verified / results.rubric_items_total) * 20.0
+            return min(100.0, round(score, 1))
 
-        # Standard scoring (backward compatible for non-web apps)
+        # Standard scoring for non-web apps
         score = 0.0
         if results.build_success:
-            score += 3.0
+            score += 30.0
         if results.tests_total > 0:
-            score += (results.tests_passed / results.tests_total) * 4.0
-        if results.lint_issues == 0:
-            score += 2.0
-        elif results.lint_issues < 5:
-            score += 1.0
+            score += (results.tests_passed / results.tests_total) * 40.0
+        score += lint_points(20.0)
         if not results.errors:
-            score += 1.0
-        # Rubric bonus for non-web apps (if rubric exists, give up to 0.5 bonus)
+            score += 10.0
+        # Rubric bonus for non-web apps (up to 5 bonus points)
         if results.rubric_items_total > 0:
             rubric_rate = results.rubric_items_verified / results.rubric_items_total
-            score += rubric_rate * 0.5
-        return min(10.0, score)
+            score += rubric_rate * 5.0
+        return min(100.0, round(score, 1))
 
     def _get_code_summary(self, project_path: Path) -> Dict[str, str]:
         """Get generated file contents for verification.
@@ -584,10 +595,18 @@ Be objective, specific, and constructive.
         skip_ext = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
                     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff',
                     '.woff2', '.ttf', '.eot', '.zip', '.tar', '.gz'}
+        # Persisted dependency dirs are NOT the engineer's code. Reading them
+        # ballooned the verifier prompt to ~1MB (250k+ tokens) and forced
+        # mid-message truncation of the actual review content.
+        skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                     '.venv', 'venv', '.git', 'dist', 'build'}
         max_file_size = 50_000  # 50KB per file
 
         for file_path in project_path.rglob('*'):
             if file_path.is_file() and not file_path.name.startswith('.'):
+                rel_parts = file_path.relative_to(project_path).parts
+                if any(part in skip_dirs for part in rel_parts[:-1]):
+                    continue
                 if file_path.suffix.lower() in skip_ext:
                     continue
                 rel_path = str(file_path.relative_to(project_path))
@@ -610,17 +629,20 @@ Be objective, specific, and constructive.
         Returns:
             Extracted score or None
         """
-        # Look for "Overall Score: X/10" or "Total: X/10"
+        # Look for "Overall Score: X/100" (current) or legacy "X/10" (scaled up)
         patterns = [
-            r'\*\*Overall Score\*\*:\s*(\d+(?:\.\d+)?)/10',
-            r'\*\*Total\*\*:\s*(\d+(?:\.\d+)?)/10',
-            r'Score:\s*(\d+(?:\.\d+)?)/10',
+            (r'\*\*Overall Score\*\*:\s*(\d+(?:\.\d+)?)\s*/\s*100', 1.0),
+            (r'\*\*Total\*\*:\s*(\d+(?:\.\d+)?)\s*/\s*100', 1.0),
+            (r'Score:\s*(\d+(?:\.\d+)?)\s*/\s*100', 1.0),
+            (r'\*\*Overall Score\*\*:\s*(\d+(?:\.\d+)?)\s*/\s*10\b', 10.0),
+            (r'\*\*Total\*\*:\s*(\d+(?:\.\d+)?)\s*/\s*10\b', 10.0),
+            (r'Score:\s*(\d+(?:\.\d+)?)\s*/\s*10\b', 10.0),
         ]
 
-        for pattern in patterns:
+        for pattern, scale in patterns:
             match = re.search(pattern, report, re.IGNORECASE)
             if match:
-                return float(match.group(1))
+                return min(100.0, float(match.group(1)) * scale)
 
         return None
 

@@ -70,7 +70,7 @@ def seed_demo_project(workspace_root: Path, active_provider: str = None) -> bool
         "current_phase": "idle",
         "iteration": 0,
         "max_iterations": 10,
-        "quality_threshold": 8.0,
+        "quality_threshold": 80.0,
         "last_score": None,
         "start_time": now,
         "last_update": now,

@@ -85,7 +85,7 @@ export function ProjectCard({ project, onRefresh }: ProjectCardProps) {
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Iteration: {project.iteration}</span>
               {project.last_score !== null && (
-                <span>Score: {project.last_score}/10</span>
+                <span>Score: {project.last_score}/100</span>
               )}
             </div>
             {project.last_update && (

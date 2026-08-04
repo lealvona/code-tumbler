@@ -27,7 +27,7 @@ class Project(Base):
     current_phase: Mapped[str] = mapped_column(String(50), nullable=False, default="idle")
     current_iteration: Mapped[int] = mapped_column(Integer, default=0)
     max_iterations: Mapped[int] = mapped_column(Integer, default=10)
-    quality_threshold: Mapped[float] = mapped_column(Float, default=8.0)
+    quality_threshold: Mapped[float] = mapped_column(Float, default=80.0)
     last_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     provider: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

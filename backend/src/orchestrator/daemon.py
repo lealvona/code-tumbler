@@ -222,7 +222,7 @@ class Orchestrator:
         architect: ArchitectAgent,
         engineer: EngineerAgent,
         verifier: VerifierAgent,
-        quality_threshold: float = 8.0,
+        quality_threshold: float = 80.0,
         max_iterations: int = 10,
         max_cost_per_project: float = 0.0,
         specifier: 'SpecifierAgent' = None,
@@ -264,7 +264,7 @@ class Orchestrator:
         self.logger.info("Code Tumbler - Orchestrator Daemon")
         self.logger.info("=" * 60)
         self.logger.info(f"Workspace: {self.workspace_root}")
-        self.logger.info(f"Quality threshold: {self.quality_threshold}/10")
+        self.logger.info(f"Quality threshold: {self.quality_threshold}/100")
         self.logger.info(f"Max iterations: {self.max_iterations}")
         self.logger.info("")
 
@@ -883,7 +883,7 @@ class Orchestrator:
             compression_metrics=self.verifier.last_compression_metrics or None,
         )
 
-        self.logger.info(f"Verification complete - Score: {score}/10")
+        self.logger.info(f"Verification complete - Score: {score}/100")
         self.logger.info("Waiting for evaluation...")
 
     def _check_cost_limit(self, project_path: Path, state_mgr: StateManager) -> bool:
@@ -918,7 +918,7 @@ class Orchestrator:
         score = state_mgr.get_score() or 0.0
 
         self.logger.info(f"\nEvaluation - Iteration {iteration}")
-        self.logger.info(f"Score: {score}/10 (threshold: {self.quality_threshold}/10)")
+        self.logger.info(f"Score: {score}/100 (threshold: {self.quality_threshold}/100)")
 
         # Check cost budget before continuing
         if self._check_cost_limit(project_path, state_mgr):
@@ -993,7 +993,7 @@ class Orchestrator:
         self.logger.info("=" * 60)
         self.logger.info(f"Project: {project_path.name}")
         self.logger.info(f"Iterations: {state.get('iteration', 0)}")
-        self.logger.info(f"Final score: {state.get('last_score', 0)}/10")
+        self.logger.info(f"Final score: {state.get('last_score', 0)}/100")
         self.logger.info(f"Archive: {archive_path}")
         self.logger.info("=" * 60 + "\n")
 

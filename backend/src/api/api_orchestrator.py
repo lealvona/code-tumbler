@@ -536,7 +536,7 @@ class APIOrchestrator(Orchestrator):
                 compression_metrics=self.verifier.last_compression_metrics or None,
             )
 
-            self.logger.info(f"Verification complete - Score: {score}/10")
+            self.logger.info(f"Verification complete - Score: {score}/100")
         except Exception as e:
             state_mgr.log_conversation(
                 agent="verifier", role="error", iteration=iteration,
@@ -573,7 +573,7 @@ class APIOrchestrator(Orchestrator):
         })
         self.event_bus.publish("log", {
             "project": project_path.name,
-            "message": f"Verifier completed - score: {score}/10",
+            "message": f"Verifier completed - score: {score}/100",
             "level": "info",
         })
 
@@ -689,10 +689,10 @@ class APIOrchestrator(Orchestrator):
                 self._run_architect(project_path, state_mgr)
 
             # Phase 2-3: Engineer -> Verifier loop
-            score_history: list[float] = []
+            progress_history: list[tuple] = []
             consecutive_failures = 0
             max_consecutive_failures = 3
-            plateau_window = 3  # stop if score unchanged for this many iterations
+            plateau_window = 3  # stop only if NOTHING observable changed this many times
 
             while not self._stopped:
                 self._refresh_providers(state_mgr)
@@ -736,10 +736,28 @@ class APIOrchestrator(Orchestrator):
                 if self._stopped:
                     break
 
-                # Evaluate
+                # Evaluate — build a progress tuple: the plateau detector only
+                # trips when score AND concrete metrics are all identical, so
+                # real progress (more tests passing, more files) never stalls
+                # the run even if the coarse score hasn't moved yet.
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
-                score_history.append(score)
+                vres = getattr(self.verifier, "last_result", None)
+                staging = project_path / "03_staging"
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv'}
+                file_count = sum(
+                    1 for f in staging.rglob('*')
+                    if f.is_file() and not any(part in skip_dirs for part in f.relative_to(staging).parts[:-1])
+                ) if staging.exists() else 0
+                progress = (
+                    round(score, 1),
+                    getattr(vres, "tests_passed", None),
+                    getattr(vres, "tests_total", None),
+                    getattr(vres, "lint_issues", None),
+                    bool(getattr(vres, "build_success", False)),
+                    file_count,
+                )
+                progress_history.append(progress)
 
                 # Check cost budget
                 if self._check_cost_limit(project_path, state_mgr):
@@ -754,13 +772,17 @@ class APIOrchestrator(Orchestrator):
                     })
                     break
 
-                # Check for score plateau (no improvement over N iterations)
-                if len(score_history) >= plateau_window:
-                    recent = score_history[-plateau_window:]
-                    if max(recent) - min(recent) < 0.5:
+                # Plateau check: fail only when N consecutive iterations produced
+                # IDENTICAL progress tuples (score, tests, lint, build, file count).
+                # A moving score or improving metrics always continues the loop.
+                if len(progress_history) >= plateau_window:
+                    recent = progress_history[-plateau_window:]
+                    if all(t == recent[0] for t in recent):
+                        scores = [t[0] for t in recent]
                         msg = (
-                            f"Score plateau detected: scores {recent} over last "
-                            f"{plateau_window} iterations (no meaningful improvement). Stopping."
+                            f"No observable progress over {plateau_window} iterations "
+                            f"(score {scores[0]}/100, tests {recent[0][1]}/{recent[0][2]}, "
+                            f"{recent[0][5]} files — all unchanged). Stopping."
                         )
                         self.logger.warning(msg)
                         state_mgr.log_conversation(
@@ -769,7 +791,7 @@ class APIOrchestrator(Orchestrator):
                             metadata={"label": "Plateau"},
                         )
                         self._publish_conversation_update(project_path, "system")
-                        state_mgr.mark_failed(f"Score plateau: {recent}")
+                        state_mgr.mark_failed(f"No observable progress: {scores}")
                         self.event_bus.publish("project_failed", {
                             "project": project_path.name,
                             "error": msg,
@@ -780,7 +802,7 @@ class APIOrchestrator(Orchestrator):
                     self._finalize_project(project_path, state_mgr)
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Project completed! Final score: {score}/10 after {iteration} iteration(s).",
+                        content=f"Project completed! Final score: {score}/100 after {iteration} iteration(s).",
                         metadata={"label": "Completed", "score": score},
                     )
                     self._publish_conversation_update(project_path, "system")
@@ -793,7 +815,7 @@ class APIOrchestrator(Orchestrator):
                 else:
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Score {score}/10 is below threshold ({self.quality_threshold}). Starting iteration {iteration + 1}...",
+                        content=f"Score {score}/100 is below threshold ({self.quality_threshold}/100). Starting iteration {iteration + 1}...",
                         metadata={"label": "Continuing"},
                     )
                     self._publish_conversation_update(project_path, "system")

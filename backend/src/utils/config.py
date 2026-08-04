@@ -36,7 +36,7 @@ class TumblerConfig:
     """Tumbler-specific configuration."""
 
     max_iterations: int = 10
-    quality_threshold: float = 8.0
+    quality_threshold: float = 80.0
     project_timeout: int = 3600
     debounce_time: int = 3
     max_cost_per_project: float = 0.0
@@ -157,6 +157,15 @@ def resolve_agent_provider(
     return config.get_provider_config(provider_name)
 
 
+def _scale_threshold(value: float) -> float:
+    """Scores are 0-100; legacy configs used 0-10. Auto-scale old values."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 80.0
+    return v * 10.0 if v <= 10.0 else v
+
+
 def load_config(config_path: Optional[str] = None) -> Config:
     """Load configuration from YAML file and environment variables.
 
@@ -246,7 +255,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     tumbler = TumblerConfig(
         max_iterations=tumbler_data.get('max_iterations', 10),
-        quality_threshold=tumbler_data.get('quality_threshold', 8.0),
+        quality_threshold=_scale_threshold(tumbler_data.get('quality_threshold', 80.0)),
         project_timeout=tumbler_data.get('project_timeout', 3600),
         debounce_time=tumbler_data.get('debounce_time', 3),
         max_cost_per_project=tumbler_data.get('max_cost_per_project', 0.0),

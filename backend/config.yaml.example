@@ -118,7 +118,7 @@ providers:
 # ── Tumbler Settings ─────────────────────────────────────────
 tumbler:
   max_iterations: 10
-  quality_threshold: 8.0
+  quality_threshold: 80        # 0-100 scale (legacy 0-10 values are auto-scaled x10)
   project_timeout: 3600           # seconds
   debounce_time: 3                # seconds
   max_cost_per_project: 0.0       # USD, 0 = no limit
