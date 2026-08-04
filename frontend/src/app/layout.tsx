@@ -3,6 +3,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/sidebar";
 import { SSEProvider } from "@/components/layout/sse-provider";
+import { ClientOnly } from "@/components/layout/client-only";
 import { Toaster } from "@/components/ui/toaster";
 
 const geistSans = localFont({
@@ -27,15 +28,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    // suppressHydrationWarning: the theme toggle sets the `dark` class on <html>
+    // and browser extensions (e.g. Dark Reader) inject inline styles/attributes
+    // before React hydrates — both are expected client-only mutations.
+    <html lang="en" suppressHydrationWarning>
       <body
+        suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <SSEProvider>
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <main className="flex-1 overflow-auto pt-14 md:pt-0">{children}</main>
-          </div>
+          {/* Client-only shell: immune to extension-induced hydration mismatches */}
+          <ClientOnly>
+            <div className="flex min-h-screen">
+              <Sidebar />
+              <main className="flex-1 overflow-auto pt-14 md:pt-0">{children}</main>
+            </div>
+          </ClientOnly>
         </SSEProvider>
         <Toaster />
       </body>
