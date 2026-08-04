@@ -27,8 +27,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    // suppressHydrationWarning: the theme toggle sets the `dark` class on <html>
+    // and browser extensions (e.g. Dark Reader) inject inline styles/attributes
+    // before React hydrates — both are expected client-only mutations.
+    <html lang="en" suppressHydrationWarning>
       <body
+        suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <SSEProvider>
