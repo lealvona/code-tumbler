@@ -63,22 +63,36 @@ _PY_DEPS = ".sandbox_deps"
 # actually write (runtime detection can fall back to plan text), which previously
 # hard-failed install on "Could not open requirements file".
 _PY_INSTALL_CMD = (
+    # 1. Test tools (always). 2. requirements.txt (strict — a broken manifest
+    # should fail install visibly). 3. Dev-requirements variants (tolerant).
+    # 4. The package itself with dev extras (src-layout projects put test deps
+    # like moto in [dev]); fall back to bare package, then continue regardless.
     f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8 && "
     f"if [ -f requirements.txt ]; then "
     f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt; "
-    f"elif [ -f pyproject.toml ]; then "
-    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} . 2>&1 || true; "
+    f"fi && "
+    f'for R in requirements-dev.txt dev-requirements.txt requirements_dev.txt; do '
+    f'[ ! -f "$R" ] || pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r "$R" || true; done && '
+    f"if [ -f pyproject.toml ]; then "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} '.[dev]' 2>&1 || "
+    f"pip install --no-cache-dir --upgrade --no-deps --target={_PY_DEPS} . 2>&1 || true; "
     f"fi"
 )
 
 # Prefer a tests/ dir (keeps pytest's rootdir/conftest scan away from .sandbox_deps);
 # fall back to the workspace root. PYTHONPATH makes the installed deps importable.
 _PY_TEST_CMD = (
-    f'PYTHONPATH={_PY_DEPS} python -m pytest "$([ -d tests ] && echo tests || echo .)" '
-    f'-x --tb=short --ignore={_PY_DEPS} -p no:cacheprovider 2>&1 || true'
+    # PYTHONPATH comes from the container-level env exports (src, workspace,
+    # .sandbox_deps) — no inline prefix here, it would shadow the exports.
+    # No -x and --continue-on-collection-errors: one broken test module must
+    # not zero out the whole run — partial pass/fail counts are exactly the
+    # signal the feedback loop needs to converge.
+    f'python -m pytest "$([ -d tests ] && echo tests || echo .)" '
+    f'--tb=short --continue-on-collection-errors --ignore={_PY_DEPS} '
+    f'-p no:cacheprovider 2>&1 || true'
 )
 _PY_LINT_CMD = (
-    f'PYTHONPATH={_PY_DEPS} python -m flake8 . --count --select=E9,F63,F7,F82 '
+    f'python -m flake8 . --count --select=E9,F63,F7,F82 '
     f'--show-source --statistics '
     f'--exclude .venv,venv,node_modules,dist,build,__pycache__,.git,{_PY_DEPS} 2>&1 || true'
 )
@@ -639,7 +653,7 @@ class SandboxExecutor:
             # /workspace first so project modules import (bare `pytest` does not
             # add rootdir to sys.path the way `python -m pytest` does).
             env_exports = [
-                f"export PYTHONPATH=/workspace:/workspace/{_PY_DEPS}",
+                f"export PYTHONPATH=/workspace/src:/workspace:/workspace/{_PY_DEPS}",
                 f"export PATH=/workspace/{_PY_DEPS}/bin:$PATH",
             ]
 
