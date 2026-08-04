@@ -54,6 +54,22 @@ class RuntimeInfo:
     dev_server_port: int = 3000
 
 
+# Workspace-local dir where Python deps are installed so they persist across the
+# per-phase containers (see the Python runtime note below).
+_PY_DEPS = ".sandbox_deps"
+
+# Prefer a tests/ dir (keeps pytest's rootdir/conftest scan away from .sandbox_deps);
+# fall back to the workspace root. PYTHONPATH makes the installed deps importable.
+_PY_TEST_CMD = (
+    f'PYTHONPATH={_PY_DEPS} python -m pytest "$([ -d tests ] && echo tests || echo .)" '
+    f'-x --tb=short --ignore={_PY_DEPS} -p no:cacheprovider 2>&1 || true'
+)
+_PY_LINT_CMD = (
+    f'PYTHONPATH={_PY_DEPS} python -m flake8 . --count --select=E9,F63,F7,F82 '
+    f'--show-source --statistics '
+    f'--exclude .venv,venv,node_modules,dist,build,__pycache__,.git,{_PY_DEPS} 2>&1 || true'
+)
+
 # Mapping of file markers to runtime info
 _RUNTIME_MARKERS = [
     # (file_to_check, RuntimeInfo factory)
@@ -65,21 +81,30 @@ _RUNTIME_MARKERS = [
         test_commands=["npm test --if-present"],
         lint_commands=["npx eslint . --no-error-on-unmatched-pattern --ignore-pattern 'node_modules/' --ignore-pattern 'dist/' --ignore-pattern 'build/' --ignore-pattern 'coverage/' 2>/dev/null || true"],
     )),
+    # Python: install deps into a workspace-local dir (.sandbox_deps) via
+    # --target, NOT system site-packages. Each verification phase runs in a fresh
+    # container and only the /workspace tree is carried between them, so anything
+    # pip puts outside /workspace (the default site-packages) is lost — which is
+    # why `python -m pytest` reported "No module named pytest" even though it
+    # installed fine. Installing into .sandbox_deps + PYTHONPATH keeps the deps
+    # available in the test/lint phases. pytest/flake8 are force-installed so the
+    # test/lint tools always exist. --upgrade makes repeat iterations idempotent.
+    # .sandbox_deps is excluded from lint and ignored by pytest collection.
     ("requirements.txt", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=["pip install --no-cache-dir -r requirements.txt"],
+        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt pytest flake8"],
         build_commands=[],
-        test_commands=["python -m pytest -x --tb=short 2>&1 || true"],
-        lint_commands=["python -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude .venv,venv,node_modules,dist,build,__pycache__,.git 2>&1 || true"],
+        test_commands=[_PY_TEST_CMD],
+        lint_commands=[_PY_LINT_CMD],
     )),
     ("pyproject.toml", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=["pip install --no-cache-dir -e '.[dev]' 2>/dev/null || pip install --no-cache-dir ."],
+        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} . pytest flake8 2>&1 || pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8"],
         build_commands=[],
-        test_commands=["python -m pytest -x --tb=short 2>&1 || true"],
-        lint_commands=["python -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude .venv,venv,node_modules,dist,build,__pycache__,.git 2>&1 || true"],
+        test_commands=[_PY_TEST_CMD],
+        lint_commands=[_PY_LINT_CMD],
     )),
     ("go.mod", lambda: RuntimeInfo(
         language="go",
