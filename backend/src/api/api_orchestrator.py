@@ -102,7 +102,11 @@ class APIOrchestrator(Orchestrator):
             full_content.append(chunk)
             buf_chars[0] += len(chunk)
             now = time.monotonic()
-            if buf_chars[0] >= 200 or (now - last_flush[0]) >= 0.2:
+            # 1000 chars / 300ms: fast providers (Kimi) emit thousands of
+            # chars/sec — the old 200-char flush produced an SSE event flood
+            # that the frontend had to re-render for. ~3 events/sec is plenty
+            # for a live preview.
+            if buf_chars[0] >= 1000 or (now - last_flush[0]) >= 0.3:
                 flush()
 
         def get_full_content() -> str:

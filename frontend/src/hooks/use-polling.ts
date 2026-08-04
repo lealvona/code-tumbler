@@ -22,9 +22,13 @@ export function usePolling(
     if (!enabled) return;
     let timer: ReturnType<typeof setInterval> | null = null;
 
+    // Always fetch once on mount — even in a hidden tab — so the page has
+    // initial data (otherwise a backgrounded tab shows "Loading..." forever).
+    // Only the RECURRING interval pauses on hidden.
+    cbRef.current();
+
     const start = () => {
       if (timer != null) return;
-      cbRef.current(); // refresh immediately on (re)start
       timer = setInterval(() => cbRef.current(), intervalMs);
     };
     const stop = () => {
@@ -33,7 +37,14 @@ export function usePolling(
         timer = null;
       }
     };
-    const onVisibility = () => (document.hidden ? stop() : start());
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        cbRef.current(); // refresh immediately on return
+        start();
+      }
+    };
 
     if (!document.hidden) start();
     document.addEventListener("visibilitychange", onVisibility);

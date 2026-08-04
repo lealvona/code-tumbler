@@ -147,7 +147,17 @@ export function tryParseFileManifest(
   content: string
 ): FileEntry[] | null {
   try {
-    const parsed = JSON.parse(content);
+    let parsed = JSON.parse(content);
+    // Engineer contract wraps the array in an object: {"files": [...]}
+    // (required by strict response_format=json_object modes). Unwrap it.
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray((parsed as { files?: unknown }).files)
+    ) {
+      parsed = (parsed as { files: unknown }).files;
+    }
     if (
       Array.isArray(parsed) &&
       parsed.length > 0 &&

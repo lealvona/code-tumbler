@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "@/lib/api";
@@ -238,14 +238,21 @@ function AgentBubble({
     return null;
   }, [message.agent, message.role, message.content]);
 
-  // Collapsible long messages
+  // Collapsible long messages — by line count OR raw size. A giant single-line
+  // payload (e.g. engineer JSON) is "1 line" but must still collapse, otherwise
+  // the markdown parser chews the whole thing and freezes the tab.
   const lines = message.content.split("\n");
-  const isLong = lines.length > COLLAPSE_LINE_THRESHOLD && !fileManifest;
+  const isHuge = message.content.length > 8000;
+  const isLong = (lines.length > COLLAPSE_LINE_THRESHOLD || isHuge) && !fileManifest;
   const displayContent =
     isLong && collapsed
-      ? lines.slice(0, COLLAPSE_PREVIEW_LINES).join("\n")
+      ? (isHuge
+          ? message.content.slice(0, 2000)
+          : lines.slice(0, COLLAPSE_PREVIEW_LINES).join("\n"))
       : message.content;
-  const remainingLines = lines.length - COLLAPSE_PREVIEW_LINES;
+  const remainingLines = Math.max(0, lines.length - COLLAPSE_PREVIEW_LINES);
+  // Never markdown-parse very large content even when expanded — plain text it.
+  const renderPlain = message.content.length > 30000 && !collapsed;
 
   // Status messages are rendered as compact inline messages
   if (isStatus) {
@@ -291,9 +298,9 @@ function AgentBubble({
           {message.metadata?.score !== undefined && (
             <Badge
               className={`text-[10px] px-2 py-0 h-5 border-0 ${
-                message.metadata.score >= 8
+                message.metadata.score >= 80
                   ? "bg-green-600 text-white"
-                  : message.metadata.score >= 5
+                  : message.metadata.score >= 50
                     ? "bg-yellow-600 text-white"
                     : "bg-red-600 text-white"
               }`}
@@ -321,18 +328,26 @@ function AgentBubble({
           <FileManifestViewer files={fileManifest} />
         ) : (
           <>
-            <StreamingContent
-              content={displayContent}
-              isNew={isNew}
-              className={isError ? "text-red-800 dark:text-red-200" : cfg.text}
-            />
+            {renderPlain ? (
+              <pre className={`whitespace-pre-wrap break-all font-mono text-xs ${cfg.text}`}>
+                {displayContent}
+              </pre>
+            ) : (
+              <StreamingContent
+                content={displayContent}
+                isNew={isNew}
+                className={isError ? "text-red-800 dark:text-red-200" : cfg.text}
+              />
+            )}
             {isLong && (
               <button
                 className={`mt-2 text-xs font-medium ${cfg.accent} hover:underline`}
                 onClick={() => setCollapsed(!collapsed)}
               >
                 {collapsed
-                  ? `Show more (${remainingLines} more lines)`
+                  ? (isHuge
+                      ? `Show more (${Math.round(message.content.length / 1000)}k chars)`
+                      : `Show more (${remainingLines} more lines)`)
                   : "Show less"}
               </button>
             )}
@@ -342,6 +357,13 @@ function AgentBubble({
     </div>
   );
 }
+
+// Memoized: chunk-stream store updates re-render the whole conversation ~5x/sec;
+// without memo every completed message re-parses its markdown each time, which
+// pegs the main thread on long transcripts. Message objects are referentially
+// stable between fetches, so memo skips all untouched bubbles.
+const MemoAgentBubble = memo(AgentBubble);
+const MemoSandboxOutput = memo(SandboxOutput);
 
 function StreamingBubble({
   agent,
@@ -371,8 +393,16 @@ function StreamingBubble({
         </div>
         <span className="inline-block w-2 h-4 bg-current animate-pulse ml-0.5 align-text-bottom opacity-60" />
       </div>
-      <div className="px-4 py-3 max-h-[600px] overflow-auto">
-        <MarkdownContent content={content} className={cfg.text} />
+      {/* Live stream preview: PLAIN TEXT tail only. Parsing the whole growing
+          buffer as markdown on every flush (often one giant single-line JSON
+          string) is super-linear and froze the page on fast providers. The
+          finished message is rendered as markdown once, after completion. */}
+      <div className="px-4 py-3 max-h-[400px] overflow-hidden">
+        <pre
+          className={`whitespace-pre-wrap break-all font-mono text-xs leading-relaxed ${cfg.text} opacity-80`}
+        >
+          {content.length > 1500 ? "…" + content.slice(-1500) : content}
+        </pre>
         <span className="inline-block w-2 h-4 bg-current animate-pulse ml-0.5 align-text-bottom" />
       </div>
     </div>
@@ -576,13 +606,13 @@ export function AgentConversation({
             <div className="space-y-3">
               {renderItems.map((item) =>
                 item.kind === "sandbox" ? (
-                  <SandboxOutput
+                  <MemoSandboxOutput
                     key={item.key}
                     phases={item.phases}
                     isLive={false}
                   />
                 ) : (
-                  <AgentBubble
+                  <MemoAgentBubble
                     key={`${item.msg.timestamp}-${item.index}`}
                     message={item.msg}
                     isNew={
