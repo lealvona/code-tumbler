@@ -642,6 +642,7 @@ class SandboxExecutor:
         phase_name: str,
         results: Optional[List[CommandResult]],
         commands: List[str],
+        status_override: Optional[str] = None,
     ) -> None:
         """Invoke the on_phase_complete callback if present."""
         if callback is None:
@@ -658,7 +659,8 @@ class SandboxExecutor:
             return
         r = results[0]
         max_sse_output = 10_000
-        status = "timeout" if r.timed_out else ("success" if r.exit_code == 0 else "failed")
+        status = "timeout" if r.timed_out else (
+            status_override or ("success" if r.exit_code == 0 else "failed"))
         callback(phase_name, {
             "status": status,
             "exit_code": r.exit_code,
@@ -839,7 +841,14 @@ class SandboxExecutor:
             results.coverage_percent = self._parse_coverage(r.stdout + r.stderr)
             if r.timed_out:
                 results.errors.append(f"Tests timed out after {self.config.timeout_test}s")
-        self._notify_phase(on_phase_complete, "test", test_results, test_cmds)
+        test_status = None
+        if test_results and not test_results[0].timed_out:
+            test_status = ("success"
+                           if results.tests_total > 0
+                           and results.tests_passed == results.tests_total
+                           else "failed")
+        self._notify_phase(on_phase_complete, "test", test_results, test_cmds,
+                           status_override=test_status)
 
         if lint_results:
             r = lint_results[0]
