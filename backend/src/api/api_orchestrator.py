@@ -715,6 +715,9 @@ class APIOrchestrator(Orchestrator):
 
             # Phase 2-3: Engineer -> Verifier loop
             progress_history: list[tuple] = []
+            # Sustained-quality policy state: (iteration, score, recognized)
+            quality_history: list[tuple] = []
+            first_hit_iteration = None
             consecutive_failures = 0
             max_consecutive_failures = 3
             plateau_window = 3  # stop only if NOTHING observable changed this many times
@@ -836,30 +839,93 @@ class APIOrchestrator(Orchestrator):
                         })
                         break
 
-                if state_mgr.is_complete(self.quality_threshold, self.max_iterations):
+                # ── Sustained-quality completion policy ─────────────────────
+                # RECOGNIZED = sandbox ran, build succeeded, and EVERY test
+                # passed (tests_total > 0). Unrecognized scores can never
+                # complete a run, no matter how high.
+                #   1. Recognized 100/100 at any point      -> stop (perfect).
+                #   2. Recognized ≥ threshold for 3 straight -> stop (sustained).
+                #   3. Threshold first reached in iters 1-3  -> keep refining
+                #      (minimum 5 iterations before a single-hit completion).
+                #   4. Recognized ≥ threshold thereafter     -> stop.
+                #   5. max_iterations                        -> finalize from best.
+                recognized = bool(
+                    vres is not None
+                    and not getattr(vres, "code_review_only", False)
+                    and getattr(vres, "build_success", False)
+                    and (getattr(vres, "tests_total", 0) or 0) > 0
+                    and getattr(vres, "tests_passed", 0) == getattr(vres, "tests_total", 0)
+                )
+                quality_history.append((iteration, score, recognized))
+                hit = recognized and score >= self.quality_threshold
+                if hit and first_hit_iteration is None:
+                    first_hit_iteration = iteration
+                consecutive_hits = 0
+                for _, s_, r_ in reversed(quality_history):
+                    if r_ and s_ >= self.quality_threshold:
+                        consecutive_hits += 1
+                    else:
+                        break
+                min_required = 5 if (first_hit_iteration is not None
+                                     and first_hit_iteration <= 3) else 0
+
+                done_reason = None
+                if recognized and score >= 100.0:
+                    done_reason = "perfect score (100/100)"
+                elif consecutive_hits >= 3:
+                    done_reason = (
+                        f"score held ≥{self.quality_threshold} for "
+                        f"{consecutive_hits} consecutive iterations"
+                    )
+                elif hit and (not min_required or iteration >= min_required):
+                    done_reason = f"quality threshold met ({score} ≥ {self.quality_threshold})"
+                elif iteration >= self.max_iterations:
+                    done_reason = f"maximum iterations ({self.max_iterations}) reached"
+
+                if done_reason:
                     self._finalize_project(project_path, state_mgr)
+                    final = state_mgr.get_score()
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Project completed! Final score: {score}/100 after {iteration} iteration(s).",
-                        metadata={"label": "Completed", "score": score},
+                        content=f"Project completed ({done_reason}). Final score: {final}/100 after {iteration} iteration(s).",
+                        metadata={"label": "Completed", "score": final},
                     )
                     self._publish_conversation_update(project_path, "system")
                     self.event_bus.publish("project_complete", {
                         "project": project_path.name,
-                        "score": score,
+                        "score": final,
                         "iteration": iteration,
                     })
                     break
                 else:
+                    if score >= self.quality_threshold and not recognized:
+                        why = ("sandbox did not run" if vres is None
+                               or getattr(vres, "code_review_only", False)
+                               else f"{getattr(vres, 'tests_total', 0) - getattr(vres, 'tests_passed', 0)} "
+                                    f"of {getattr(vres, 'tests_total', 0)} tests failing"
+                               if (getattr(vres, "tests_total", 0) or 0) > 0
+                               else "no tests collected")
+                        msg = (f"Score {score}/100 is above threshold but NOT recognized "
+                               f"({why}) — all tests must pass. Continuing.")
+                        label = "Not Recognized"
+                    elif hit and min_required and iteration < min_required:
+                        msg = (f"Score {score}/100 met the threshold early (iteration "
+                               f"{iteration}) — refining further; a single-hit completion "
+                               f"requires at least {min_required} iterations.")
+                        label = "Early Success — Extending"
+                    else:
+                        msg = (f"Score {score}/100 below threshold "
+                               f"({self.quality_threshold}/100). Starting iteration {iteration + 1}...")
+                        label = "Continuing"
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Score {score}/100 is below threshold ({self.quality_threshold}/100). Starting iteration {iteration + 1}...",
-                        metadata={"label": "Continuing"},
+                        content=msg,
+                        metadata={"label": label},
                     )
                     self._publish_conversation_update(project_path, "system")
                     self.event_bus.publish("log", {
                         "project": project_path.name,
-                        "message": f"Score {score}/10 below threshold, starting iteration {iteration + 1}",
+                        "message": msg,
                         "level": "warning",
                     })
 
