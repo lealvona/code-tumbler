@@ -970,10 +970,61 @@ class Orchestrator:
             )
             state = state_mgr.load_state()
             state['best_score'] = score
+            state['best_iteration'] = state.get('iteration', 0)
             state_mgr.save_state(state)
             self.logger.info(f"Snapshotted best iteration (score {score}/100)")
         except OSError as e:
             self.logger.warning(f"Best-iteration snapshot failed: {e}")
+
+    def _revert_to_best(self, project_path: Path, state_mgr: StateManager,
+                        score: float) -> bool:
+        """Hill-climb: when an iteration regresses well below the best, restore
+        the best snapshot into staging so the NEXT iteration improves the best
+        code instead of digging out of a hole. Returns True when reverted.
+        """
+        import shutil
+        state = state_mgr.load_state()
+        best = state.get('best_score')
+        best_it = state.get('best_iteration')
+        if best is None or score >= best - 10:
+            return False
+        best_dir = project_path / ".tumbler" / "best_staging"
+        if not best_dir.exists() or not any(best_dir.iterdir()):
+            return False
+        staging = project_path / "03_staging"
+        try:
+            from orchestrator.state_manager import _CLEARABLE_PROJECT_SUBDIRS
+            state_mgr._safe_clear_dir(staging, allowed_names=_CLEARABLE_PROJECT_SUBDIRS)
+            staging.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(best_dir, staging, dirs_exist_ok=True)
+        except OSError as e:
+            self.logger.warning(f"Revert-to-best failed: {e}")
+            return False
+
+        # Rewrite the feedback so the engineer works on the BEST code's issues,
+        # not the rejected iteration's wreckage.
+        iteration = state.get('iteration', 0)
+        report_file = project_path / "04_feedback" / f"REPORT_iter{iteration}.md"
+        best_report = project_path / "04_feedback" / f"REPORT_iter{best_it}.md"
+        note = (
+            f"# CODE REVERTED TO BEST ITERATION\n\n"
+            f"Iteration {iteration} scored {score}/100 — a regression from the best "
+            f"iteration {best_it} ({best}/100). Its changes were REJECTED and the "
+            f"code has been restored to iteration {best_it}'s state.\n\n"
+            f"Do NOT repeat the rejected approach. Improve the restored code by "
+            f"fixing the remaining issues from the best iteration's report below.\n\n"
+            f"---\n\n"
+        )
+        try:
+            best_text = best_report.read_text(encoding='utf-8') if best_report.exists() else ""
+            report_file.parent.mkdir(parents=True, exist_ok=True)
+            report_file.write_text(note + best_text, encoding='utf-8')
+        except OSError as e:
+            self.logger.warning(f"Could not rewrite feedback after revert: {e}")
+        self.logger.info(
+            f"Regression {score} << best {best}: reverted staging to iteration {best_it}"
+        )
+        return True
 
     def _finalize_project(self, project_path: Path, state_mgr: StateManager):
         """Finalize a completed project.
