@@ -198,9 +198,18 @@ REGRESSION GUARD (critical):
 - Keep changes minimal and targeted at the specific failures in the feedback.
 - When you change a file, output its COMPLETE new content (no diffs/ellipses).
 
+LAYOUT DISCIPLINE (critical):
+- Use EXACTLY the directory layout from the plan. Never invent new top-level
+  directories, and never create a second copy of a package at a different
+  root (e.g. both `driftvault/` and `src/driftvault/`) — stale duplicates
+  shadow imports and break every test.
+- If stale/duplicate files from earlier iterations exist (see Previous
+  Implementation), list them in "delete" to remove them.
+
 Output a single pure JSON object with a "files" array containing ONLY the
-changed or added files:
-{{"files": [{{"path": "...", "content": "..."}}, ...]}}
+changed or added files, and an optional "delete" array of stale paths to
+remove:
+{{"files": [{{"path": "...", "content": "..."}}, ...], "delete": ["stale/path.py", ...]}}
 """
 
         # Inject "Rules & Lessons Learned" just before the task instructions,
@@ -535,6 +544,13 @@ changed or added files:
 
             files = all_files
 
+        # Apply requested deletions of stale files (path-contained, files only,
+        # then empty parent dirs bottom-up — per the no-force-deletion policy).
+        pending = getattr(self, '_pending_deletes', None)
+        self._pending_deletes = None
+        if pending and output_dir:
+            self._apply_deletes(pending, output_dir)
+
         # Completeness gate: one bounded, targeted pass when the generated set is
         # missing critical files (dependency manifest, tests, or planned files).
         # Models frequently truncate/omit on large plans; a small "generate ONLY
@@ -667,8 +683,12 @@ changed or added files:
     def _convert_to_file_dict(self, files_array: Any) -> Dict[str, str]:
         """Convert parsed JSON array to file dictionary."""
         # response_format=json_object forces an OBJECT — models then wrap the
-        # array, e.g. {"files": [...]}. Unwrap before validating.
+        # array, e.g. {"files": [...]}. Unwrap before validating. An optional
+        # "delete" list (stale paths to remove) is stashed for generate_code.
         if isinstance(files_array, dict):
+            dels = files_array.get("delete")
+            if isinstance(dels, list):
+                self._pending_deletes = [d for d in dels if isinstance(d, str)]
             for key in ("files", "Files", "FILES"):
                 if isinstance(files_array.get(key), list):
                     files_array = files_array[key]
@@ -781,6 +801,42 @@ changed or added files:
             prefix, len(stripped),
         )
         return stripped
+
+    def _apply_deletes(self, paths: List[str], output_dir: Path) -> None:
+        """Safely remove engineer-requested stale paths from staging.
+
+        Policy-compliant deletion: every path is resolved and validated inside
+        output_dir; symlinks are never followed; files are unlinked one by one
+        and emptied directories removed bottom-up with rmdir. Anything that
+        fails is logged and skipped — never escalated.
+        """
+        root = output_dir.resolve()
+        deleted = 0
+        for rel in paths[:50]:  # bounded
+            target = (output_dir / rel.strip().lstrip("/")).resolve()
+            if not str(target).startswith(str(root) + "/"):
+                logger.warning("Delete request outside staging ignored: %r", rel)
+                continue
+            try:
+                if target.is_symlink() or target.is_file():
+                    target.unlink(missing_ok=True)
+                    deleted += 1
+                elif target.is_dir():
+                    for f in sorted(target.rglob("*"), reverse=True):
+                        try:
+                            if f.is_symlink() or f.is_file():
+                                f.unlink(missing_ok=True)
+                                deleted += 1
+                            elif f.is_dir():
+                                f.rmdir()
+                        except OSError as e:
+                            logger.warning("Skip undeletable %s: %s", f, e)
+                    target.rmdir()
+            except OSError as e:
+                logger.warning("Skip undeletable %s: %s", target, e)
+        if deleted:
+            logger.info("Engineer deletions applied: %d file(s) from %d request(s)",
+                        deleted, len(paths))
 
     def _write_files(self, files: Dict[str, str], output_dir: Path) -> None:
         """Write files to disk.

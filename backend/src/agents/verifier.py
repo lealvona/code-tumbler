@@ -330,6 +330,14 @@ Be objective, specific, and constructive.
             ]
 
         # Calculate preliminary score
+        # Mechanical layout check: duplicate packages (root X/ AND src/X/) from
+        # incremental iterations shadow imports and zero out test collection.
+        # Feed conflicts into errors so they hit the report, the score, and the
+        # next iteration's feedback with a concrete delete instruction.
+        for conflict in self._detect_layout_conflicts(project_path):
+            if conflict not in results.errors:
+                results.errors.append(conflict)
+
         results.score = self._calculate_score(results)
 
         # Get code summary
@@ -545,6 +553,27 @@ Be objective, specific, and constructive.
             })
         except Exception:
             logger.debug("sandbox_unavailable notification failed", exc_info=True)
+
+    @staticmethod
+    def _detect_layout_conflicts(project_path: Path) -> List[str]:
+        """Detect stale duplicate package trees (e.g. both x/ and src/x/)."""
+        issues: List[str] = []
+        try:
+            src = project_path / "src"
+            if not src.is_dir():
+                return issues
+            for pkg in src.iterdir():
+                if pkg.is_dir() and (pkg / "__init__.py").exists():
+                    dup = project_path / pkg.name
+                    if dup.is_dir() and (dup / "__init__.py").exists():
+                        issues.append(
+                            f"Layout conflict: both '{pkg.name}/' and 'src/{pkg.name}/' exist. "
+                            f"The stale root copy shadows imports and breaks test collection — "
+                            f"delete the outdated one (use the \"delete\" list)."
+                        )
+        except OSError:
+            pass
+        return issues
 
     def _calculate_score(self, results: VerificationResult) -> Optional[float]:
         """Calculate preliminary quality score (0-100) from verification results.
