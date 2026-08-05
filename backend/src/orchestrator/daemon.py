@@ -26,12 +26,14 @@ except ImportError:
 
 try:
     from .state_manager import StateManager, ProjectPhase
-    from ..agents import ArchitectAgent, EngineerAgent, VerifierAgent
+    from ..agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from ..utils.logger import get_logger
+    from ..rules import RulesLedger
 except ImportError:
     from orchestrator.state_manager import StateManager, ProjectPhase
-    from agents import ArchitectAgent, EngineerAgent, VerifierAgent
+    from agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
     from utils.logger import get_logger
+    from rules import RulesLedger
 
 
 class ResourceAwareQueue:
@@ -220,9 +222,10 @@ class Orchestrator:
         architect: ArchitectAgent,
         engineer: EngineerAgent,
         verifier: VerifierAgent,
-        quality_threshold: float = 8.0,
+        quality_threshold: float = 80.0,
         max_iterations: int = 10,
         max_cost_per_project: float = 0.0,
+        specifier: 'SpecifierAgent' = None,
     ):
         """Initialize the orchestrator.
 
@@ -234,8 +237,10 @@ class Orchestrator:
             quality_threshold: Minimum score to finalize project
             max_iterations: Maximum refinement iterations
             max_cost_per_project: Max cost in dollars (0 = unlimited)
+            specifier: Optional Phase-1 Specifier agent (idea -> YAML spec suite)
         """
         self.workspace_root = Path(workspace_root)
+        self.specifier = specifier
         self.architect = architect
         self.engineer = engineer
         self.verifier = verifier
@@ -259,7 +264,7 @@ class Orchestrator:
         self.logger.info("Code Tumbler - Orchestrator Daemon")
         self.logger.info("=" * 60)
         self.logger.info(f"Workspace: {self.workspace_root}")
-        self.logger.info(f"Quality threshold: {self.quality_threshold}/10")
+        self.logger.info(f"Quality threshold: {self.quality_threshold}/100")
         self.logger.info(f"Max iterations: {self.max_iterations}")
         self.logger.info("")
 
@@ -356,6 +361,71 @@ class Orchestrator:
             with self._processing_lock:
                 self._processing_projects.discard(project_name)
 
+    def _render_rules(self, project_path: Path) -> Optional[str]:
+        """Rendered, capped 'Rules & Lessons Learned' from the ledger (or None)."""
+        try:
+            return RulesLedger(self.workspace_root).render_for_prompt(project_path)
+        except Exception as e:
+            self.logger.warning(f"Could not load rules ledger: {e}")
+            return None
+
+    def _read_spec_suite(self, project_path: Path) -> Optional[str]:
+        """Concatenate the Phase-1 YAML spec suite (if any) for the Architect.
+
+        Returns a single string with each file labelled by its relative path,
+        or None if no spec suite exists.
+        """
+        spec_dir = project_path / "spec"
+        if not spec_dir.exists():
+            return None
+        parts: List[str] = []
+        for f in sorted(spec_dir.rglob("*.yaml")):
+            try:
+                rel = f.relative_to(project_path).as_posix()
+                parts.append(f"### {rel}\n\n{f.read_text(encoding='utf-8')}")
+            except OSError:
+                continue
+        return "\n\n".join(parts) if parts else None
+
+    def _run_specifier(self, project_path: Path, state_mgr: StateManager):
+        """Run the Phase-1 Specifier agent: idea -> YAML spec suite.
+
+        No-op if no specifier is configured. Writes the suite under
+        `<project>/spec/` and an export archive to `.tumbler/spec_archive.json`.
+        """
+        if not self.specifier:
+            return
+
+        self.logger.info("Phase: SPECIFIER - Generating spec suite")
+        state_mgr.update_phase(ProjectPhase.SPECIFYING)
+
+        requirements_file = project_path / "01_input" / "requirements.txt"
+        if not requirements_file.exists():
+            raise FileNotFoundError(f"Requirements file not found: {requirements_file}")
+        idea = requirements_file.read_text(encoding='utf-8')
+
+        compression_config = state_mgr.get_compression_config()
+        result = self.specifier.generate_spec(
+            idea=idea,
+            project_name=project_path.name,
+            project_root=project_path,
+            temperature=0.4,
+            compression_config=compression_config,
+        )
+
+        usage = self.specifier.get_total_usage()
+        state_mgr.log_usage(
+            agent='specifier',
+            input_tokens=usage['total_input_tokens'],
+            output_tokens=usage['total_output_tokens'],
+            cost=usage['total_cost'],
+            compression_metrics=self.specifier.last_compression_metrics or None,
+        )
+
+        if SpecifierAgent.is_complete(project_path):
+            state_mgr.set_spec_complete(True)
+        self.logger.info("Spec suite generated: %d files", len(result.get('files', {})))
+
     def _run_architect(self, project_path: Path, state_mgr: StateManager):
         """Run the Architect agent.
 
@@ -373,6 +443,10 @@ class Orchestrator:
 
         requirements = requirements_file.read_text(encoding='utf-8')
 
+        # Phase-1 spec suite (if the Specifier ran) — passed uncompressed so the
+        # normative YAML contract reaches the Architect verbatim.
+        spec = self._read_spec_suite(project_path)
+
         # Generate plan
         plan_file = project_path / "02_plan" / "PLAN.md"
         compression_config = state_mgr.get_compression_config()
@@ -380,6 +454,8 @@ class Orchestrator:
             requirements=requirements,
             project_name=project_path.name,
             output_path=plan_file,
+            spec=spec,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -452,10 +528,18 @@ class Orchestrator:
                 skip_ext = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
                             '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff',
                             '.woff2', '.ttf', '.eot', '.zip', '.tar', '.gz'}
+                # Installed-dependency dirs persisted by the sandbox install phase.
+                # These are NOT the engineer's code — reading them would flood the
+                # refinement prompt with hundreds of vendored files.
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                             '.venv', 'venv', '.git', 'dist', 'build'}
                 max_file_size = 50_000  # 50KB per file
 
                 for file_path in staging_dir.rglob('*'):
                     if file_path.is_file() and file_path.name != '.manifest.json':
+                        rel_parts = file_path.relative_to(staging_dir).parts
+                        if any(part in skip_dirs for part in rel_parts[:-1]):
+                            continue
                         if file_path.suffix.lower() in skip_ext:
                             continue
                         rel_path = file_path.relative_to(staging_dir)
@@ -476,6 +560,7 @@ class Orchestrator:
             feedback=feedback,
             previous_code=previous_code,
             output_dir=staging_dir,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -738,6 +823,7 @@ class Orchestrator:
             feedback=feedback,
             previous_code=previous_code,
             output_dir=staging_dir,
+            rules=self._render_rules(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -797,7 +883,7 @@ class Orchestrator:
             compression_metrics=self.verifier.last_compression_metrics or None,
         )
 
-        self.logger.info(f"Verification complete - Score: {score}/10")
+        self.logger.info(f"Verification complete - Score: {score}/100")
         self.logger.info("Waiting for evaluation...")
 
     def _check_cost_limit(self, project_path: Path, state_mgr: StateManager) -> bool:
@@ -832,7 +918,7 @@ class Orchestrator:
         score = state_mgr.get_score() or 0.0
 
         self.logger.info(f"\nEvaluation - Iteration {iteration}")
-        self.logger.info(f"Score: {score}/10 (threshold: {self.quality_threshold}/10)")
+        self.logger.info(f"Score: {score}/100 (threshold: {self.quality_threshold}/100)")
 
         # Check cost budget before continuing
         if self._check_cost_limit(project_path, state_mgr):
@@ -856,6 +942,39 @@ class Orchestrator:
             plan_file = project_path / "02_plan" / "PLAN.md"
             plan_file.touch()
 
+    def _snapshot_best(self, project_path: Path, state_mgr: StateManager, score: float):
+        """Keep a copy of staging whenever the score improves.
+
+        The engineer can regress on later iterations (a bad rewrite after a good
+        one); when the run is force-finalized at max_iterations, we archive the
+        BEST iteration's code, not whatever the last roll of the dice produced.
+        """
+        import shutil
+        state = state_mgr.load_state()
+        best = state.get('best_score')
+        if best is not None and score <= best:
+            return
+        staging = project_path / "03_staging"
+        if not staging.exists():
+            return
+        dest = project_path / ".tumbler" / "best_staging"
+        try:
+            if dest.exists():
+                from orchestrator.state_manager import _CLEARABLE_STATE_SUBDIRS
+                state_mgr._safe_clear_dir(dest, allowed_names=_CLEARABLE_STATE_SUBDIRS)
+            shutil.copytree(
+                staging, dest, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    '.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv',
+                    '.git', 'dist', 'build', '.manifest.json'),
+            )
+            state = state_mgr.load_state()
+            state['best_score'] = score
+            state_mgr.save_state(state)
+            self.logger.info(f"Snapshotted best iteration (score {score}/100)")
+        except OSError as e:
+            self.logger.warning(f"Best-iteration snapshot failed: {e}")
+
     def _finalize_project(self, project_path: Path, state_mgr: StateManager):
         """Finalize a completed project.
 
@@ -876,16 +995,43 @@ class Orchestrator:
         final_dir.mkdir(parents=True, exist_ok=True)
 
         staging_dir = project_path / "03_staging"
+
+        # Archive the BEST iteration if the final one regressed below it.
+        state = state_mgr.load_state()
+        best_score = state.get('best_score')
+        last_score = state.get('last_score')
+        best_dir = project_path / ".tumbler" / "best_staging"
+        if (best_score is not None and last_score is not None
+                and best_score > last_score and best_dir.exists()
+                and any(best_dir.iterdir())):
+            self.logger.info(
+                f"Final iteration scored {last_score}/100 but iteration snapshot "
+                f"with {best_score}/100 exists — archiving the best iteration."
+            )
+            staging_dir = best_dir
+            state['last_score'] = best_score
+            state_mgr.save_state(state)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         archive_name = f"{project_path.name}_{timestamp}"
 
-        # Create zip archive
+        # Create zip archive of the DELIVERABLE only — exclude installed-dependency
+        # dirs persisted by the sandbox (.sandbox_deps, node_modules, ...) and the
+        # verifier's trigger file. Consumers reinstall deps from the manifests.
+        import zipfile
+        exclude_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                        '.venv', 'venv', '.git', 'dist', 'build'}
         archive_path = final_dir / f"{archive_name}.zip"
-        shutil.make_archive(
-            str(final_dir / archive_name),
-            'zip',
-            staging_dir
-        )
+        with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(staging_dir.rglob('*')):
+                if not file_path.is_file():
+                    continue
+                rel = file_path.relative_to(staging_dir)
+                if any(part in exclude_dirs for part in rel.parts[:-1]):
+                    continue
+                if rel.name == '.manifest.json':
+                    continue
+                zf.write(file_path, rel.as_posix())
 
         self.logger.info(f"✓ Project archived to: {archive_path}")
 
@@ -897,7 +1043,7 @@ class Orchestrator:
         self.logger.info("=" * 60)
         self.logger.info(f"Project: {project_path.name}")
         self.logger.info(f"Iterations: {state.get('iteration', 0)}")
-        self.logger.info(f"Final score: {state.get('last_score', 0)}/10")
+        self.logger.info(f"Final score: {state.get('last_score', 0)}/100")
         self.logger.info(f"Archive: {archive_path}")
         self.logger.info("=" * 60 + "\n")
 

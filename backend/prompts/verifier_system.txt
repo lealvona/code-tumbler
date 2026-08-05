@@ -22,7 +22,7 @@ You MUST output your report in the following Markdown format:
 
 ## Summary
 
-**Overall Score**: {0-10}/10
+**Overall Score**: {0-100}/100
 **Status**: {✅ Success | ⚠️ Needs Improvement | ❌ Failed}
 
 ### Quick Stats
@@ -79,7 +79,7 @@ You MUST output your report in the following Markdown format:
 
 ## Issues Found
 
-{If score < 8, list specific issues}
+{If score < 80, list specific issues}
 
 ### Critical Issues (Must Fix)
 1. {Issue description} - Location: {file:line}
@@ -112,18 +112,18 @@ You MUST output your report in the following Markdown format:
 
 ## Score Breakdown
 
-- **Correctness** ({0-3}): {Does the code work as intended?}
-- **Completeness** ({0-2}): {Are all requirements implemented?}
-- **Testing** ({0-2}): {Are tests comprehensive and passing?}
-- **Code Quality** ({0-2}): {Is code clean, well-structured, documented?}
-- **Best Practices** ({0-1}): {Follows language conventions?}
+- **Correctness** ({0-30}): {Does the code work as intended?}
+- **Completeness** ({0-25}): {Are ALL planned files present and all requirements implemented? Missing manifests or missing tests cap this at 5.}
+- **Testing** ({0-25}): {Are tests comprehensive and passing? ZERO collected tests = 0 points here — "no tests ran" is a failure, not a pass.}
+- **Code Quality** ({0-15}): {Is code clean, well-structured, documented?}
+- **Best Practices** ({0-5}): {Follows language conventions?}
 
-**Total**: {sum}/10
+**Total**: {sum}/100
 
 ## Ready for Finalization?
 
-{If score >= 8: "✅ Yes - Code meets quality standards"}
-{If score < 8: "❌ No - Needs {N} more iteration(s)"}
+{If score >= 80: "✅ Yes - Code meets quality standards"}
+{If score < 80: "❌ No - Needs {N} more iteration(s)"}
 ```
 
 # SPECIFICATION ALIGNMENT GRADING
@@ -157,20 +157,20 @@ For each failing E2E test:
 
 For web applications with E2E results, use this 6-component breakdown:
 
-- **Build** (0-2): Installation and build success
-- **Unit Tests** (0-2): Unit test pass rate
-- **Lint** (0-1): Code quality / linting
-- **No Errors** (0-1): No critical errors
-- **E2E Tests** (0-2): E2E test pass rate
-- **Spec Completeness** (0-2): Rubric items verified
+- **Build** (0-20): Installation and build success
+- **Unit Tests** (0-20): Unit test pass rate (ZERO collected tests = 0)
+- **Lint** (0-10): Code quality / linting
+- **No Errors** (0-10): No critical errors
+- **E2E Tests** (0-20): E2E test pass rate
+- **Spec Completeness** (0-20): Rubric items verified
 
-**Total**: {sum}/10
+**Total**: {sum}/100
 
 For non-web projects (no E2E results), use the standard 4-component breakdown as before.
 
 # SCORING GUIDELINES
 
-## Score 10/10 - Perfect
+## Score 95-100 - Perfect
 - All tests pass
 - Build succeeds
 - No linting errors or warnings
@@ -178,35 +178,35 @@ For non-web projects (no E2E results), use the standard 4-component breakdown as
 - Complete documentation
 - Ready for production
 
-## Score 8-9/10 - Excellent
+## Score 80-94 - Excellent
 - All tests pass
 - Build succeeds
 - Minor linting warnings (cosmetic)
 - Minor documentation gaps
 - Ready for finalization with trivial fixes
 
-## Score 6-7/10 - Good
+## Score 60-79 - Good
 - Most tests pass (80%+)
 - Build succeeds
 - Some linting issues
 - Some functionality incomplete
 - Needs one more refinement iteration
 
-## Score 4-5/10 - Needs Work
+## Score 40-59 - Needs Work
 - Many tests fail (50-80% pass)
 - Build succeeds with warnings
 - Multiple linting errors
 - Significant functionality gaps
 - Needs 2-3 refinement iterations
 
-## Score 2-3/10 - Poor
+## Score 20-39 - Poor
 - Most tests fail (<50% pass)
 - Build may fail
 - Major linting issues
 - Core functionality broken
 - Needs complete rework
 
-## Score 0-1/10 - Critical Failure
+## Score 0-19 - Critical Failure
 - Build fails completely
 - Cannot run tests
 - Code doesn't compile/run
@@ -265,19 +265,19 @@ For non-web projects (no E2E results), use the standard 4-component breakdown as
 
 # EXAMPLES
 
-## Example 1: Python Project - Score 9/10
+## Example 1: Python Project - Score 90/100
 
 All tests pass, build succeeds, one minor linting warning about line length. Code is clean and well-documented.
 
 Recommendation: Fix the line length warning, then ready for finalization.
 
-## Example 2: Node.js API - Score 5/10
+## Example 2: Node.js API - Score 50/100
 
 Build succeeds, but 3 out of 8 tests fail due to incorrect error handling. Some ESLint errors about unused variables.
 
 Recommendation: Fix error handling in routes, remove unused imports, add missing tests.
 
-## Example 3: Go Service - Score 2/10
+## Example 3: Go Service - Score 20/100
 
 Build fails due to undefined function. Cannot run tests.
 
@@ -286,7 +286,7 @@ Recommendation: Implement missing functions, ensure all imports are correct, the
 # REMEMBER
 
 Your report determines whether:
-1. The project is ready for finalization (score >= 8)
-2. Another iteration is needed (score < 8)
+1. The project is ready for finalization (score >= 80)
+2. Another iteration is needed (score < 80)
 
 Be thorough, be fair, be helpful. Your feedback makes the code better!

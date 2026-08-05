@@ -10,9 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.state_manager import StateManager
-from agents import ArchitectAgent, EngineerAgent, VerifierAgent
+from agents import SpecifierAgent, ArchitectAgent, EngineerAgent, VerifierAgent
+from agents.specifier import SPEC_ARCHIVE_FORMAT, REQUIRED_SPEC_FILES
 from utils.provider_factory import create_provider
-from utils.config import resolve_agent_provider
+from utils.config import resolve_agent_provider, AGENT_ROLES
 from api.api_orchestrator import APIOrchestrator
 from db.session import async_session_dep
 from db.repository import ProjectRepository
@@ -113,7 +114,7 @@ async def create_project(body: ProjectCreate, request: Request):
         raise HTTPException(400, f"Project '{body.name}' already exists")
 
     # Create directory structure
-    for subdir in ["01_input", "02_plan", "03_staging", "04_feedback", "05_final"]:
+    for subdir in ["01_input", "spec", "02_plan", "03_staging", "04_feedback", "05_final"]:
         (project_dir / subdir).mkdir(parents=True)
 
     # Write requirements
@@ -132,7 +133,7 @@ async def create_project(body: ProjectCreate, request: Request):
     if body.provider_overrides:
         config = request.app.state.config
         for agent_name, provider_name in body.provider_overrides.items():
-            if agent_name not in ("architect", "engineer", "verifier"):
+            if agent_name not in AGENT_ROLES:
                 raise HTTPException(400, f"Invalid agent name: {agent_name}")
             if provider_name not in config.providers:
                 raise HTTPException(400, f"Provider '{provider_name}' not found")
@@ -170,7 +171,7 @@ async def get_project_status(name: str, request: Request):
     # Include effective provider info
     overrides = state.get('provider_overrides', {})
     providers = {}
-    for agent_name in ("architect", "engineer", "verifier"):
+    for agent_name in AGENT_ROLES:
         try:
             pc = resolve_agent_provider(config, agent_name, overrides)
             providers[agent_name] = {
@@ -189,7 +190,7 @@ async def get_project_status(name: str, request: Request):
 
     # Async concurrency capabilities per agent
     async_capabilities = {}
-    for agent_name in ("architect", "engineer", "verifier"):
+    for agent_name in AGENT_ROLES:
         try:
             pc = resolve_agent_provider(config, agent_name, overrides)
             provider = create_provider(pc)
@@ -288,6 +289,144 @@ async def get_project_usage(name: str, request: Request, session: AsyncSession =
     return json.loads(usage_file.read_text(encoding="utf-8"))
 
 
+def _spec_files(spec_dir: Path) -> List[Dict[str, Any]]:
+    """Ordered flat list of spec YAML files under a project's spec/ dir."""
+    if not spec_dir.exists():
+        return []
+    files = []
+    for f in sorted(spec_dir.rglob("*.yaml")):
+        rel = f.relative_to(spec_dir.parent).as_posix()  # e.g. "spec/00-base.yaml"
+        files.append({"path": rel, "size": f.stat().st_size})
+    return files
+
+
+def _resolve_spec_path(project_dir: Path, file_path: str) -> Path:
+    """Resolve a spec-relative path with traversal protection.
+
+    Accepts either "spec/00-base.yaml" or "00-base.yaml"; always confined to the
+    project's spec/ directory.
+    """
+    spec_dir = (project_dir / "spec").resolve()
+    rel = file_path[5:] if file_path.startswith("spec/") else file_path
+    target = (spec_dir / rel).resolve()
+    if not str(target).startswith(str(spec_dir)):
+        raise HTTPException(400, "Invalid spec file path")
+    return target
+
+
+@router.get("/projects/{name}/spec")
+async def get_spec(name: str, request: Request):
+    """List the Phase-1 spec suite files and completion status."""
+    project_dir = _get_project_dir(request, name)
+    sm = StateManager(project_dir)
+    spec_cfg = sm.get_spec_config()
+    return {
+        "enabled": spec_cfg.get("enabled", True),
+        "complete": spec_cfg.get("complete", False),
+        "required": list(REQUIRED_SPEC_FILES),
+        "files": _spec_files(project_dir / "spec"),
+    }
+
+
+@router.get("/projects/{name}/spec/export")
+async def export_spec(name: str, request: Request):
+    """Export the spec suite as a code-tumbler-spec-archive JSON archive."""
+    project_dir = _get_project_dir(request, name)
+    archive_file = project_dir / ".tumbler" / "spec_archive.json"
+    if archive_file.exists():
+        return json.loads(archive_file.read_text(encoding="utf-8"))
+    # Rebuild a minimal archive from files on disk if no cached archive exists.
+    spec_dir = project_dir / "spec"
+    if not spec_dir.exists() or not any(spec_dir.rglob("*.yaml")):
+        raise HTTPException(404, "No spec suite found for this project")
+    files = []
+    for f in sorted(spec_dir.rglob("*.yaml")):
+        rel = f.relative_to(spec_dir.parent).as_posix()
+        files.append({"path": rel, "content": f.read_text(encoding="utf-8"), "guide": {}})
+    sm = StateManager(project_dir)
+    idea = ""
+    req = project_dir / "01_input" / "requirements.txt"
+    if req.exists():
+        idea = req.read_text(encoding="utf-8")
+    return {
+        "format": SPEC_ARCHIVE_FORMAT,
+        "format_version": 1,
+        "spec_version": "0.1.0",
+        "session": {"name": name, "description": idea},
+        "files": files,
+    }
+
+
+@router.post("/projects/{name}/spec/import")
+async def import_spec(name: str, request: Request):
+    """Import a spec archive, validating the format discriminator."""
+    project_dir = _get_project_dir(request, name)
+    if name in request.app.state.active_orchestrators:
+        raise HTTPException(409, "Cannot import spec into a running project. Stop it first.")
+    archive = await request.json()
+    if not isinstance(archive, dict) or archive.get("format") != SPEC_ARCHIVE_FORMAT:
+        raise HTTPException(400, f"Invalid archive: expected format '{SPEC_ARCHIVE_FORMAT}'")
+    files = archive.get("files", [])
+    if not isinstance(files, list) or not files:
+        raise HTTPException(400, "Archive contains no files")
+
+    written = 0
+    for fo in files:
+        path = (fo.get("path") or "").strip().lstrip("/")
+        content = fo.get("content", "")
+        if not path or not isinstance(content, str):
+            continue
+        if not path.startswith("spec/"):
+            continue
+        target = _resolve_spec_path(project_dir, path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        written += 1
+
+    # Persist the archive and mark complete if the required set is present.
+    (project_dir / ".tumbler").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".tumbler" / "spec_archive.json").write_text(
+        json.dumps(archive, indent=2), encoding="utf-8"
+    )
+    sm = StateManager(project_dir)
+    complete = all((project_dir / f).exists() for f in REQUIRED_SPEC_FILES)
+    sm.set_spec_complete(complete)
+
+    event_bus = request.app.state.event_bus
+    event_bus.publish("spec_imported", {"project": name, "files": written})
+    return {"status": "imported", "files": written, "complete": complete}
+
+
+@router.get("/projects/{name}/spec/{file_path:path}")
+async def get_spec_file(name: str, file_path: str, request: Request):
+    """Get the content of a single spec file."""
+    project_dir = _get_project_dir(request, name)
+    target = _resolve_spec_path(project_dir, file_path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Spec file not found")
+    return {
+        "path": file_path if file_path.startswith("spec/") else f"spec/{file_path}",
+        "content": target.read_text(encoding="utf-8"),
+        "size": target.stat().st_size,
+    }
+
+
+@router.put("/projects/{name}/spec/{file_path:path}")
+async def save_spec_file(name: str, file_path: str, request: Request):
+    """Save (edit) a single spec file's content."""
+    project_dir = _get_project_dir(request, name)
+    if name in request.app.state.active_orchestrators:
+        raise HTTPException(409, "Cannot edit spec of a running project. Stop it first.")
+    body = await request.json()
+    content = body.get("content")
+    if not isinstance(content, str):
+        raise HTTPException(400, "Body must include a string 'content'")
+    target = _resolve_spec_path(project_dir, file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return {"status": "saved", "path": file_path, "size": target.stat().st_size}
+
+
 @router.post("/projects/{name}/start")
 async def start_project(name: str, request: Request, body: Optional[StartProjectBody] = None):
     """Start the tumbling cycle for a project."""
@@ -306,7 +445,7 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
     # Save provider overrides if provided
     if body and body.provider_overrides:
         for agent_name, provider_name in body.provider_overrides.items():
-            if agent_name not in ("architect", "engineer", "verifier"):
+            if agent_name not in AGENT_ROLES:
                 raise HTTPException(400, f"Invalid agent name: {agent_name}")
             if provider_name not in config.providers:
                 raise HTTPException(400, f"Provider '{provider_name}' not found")
@@ -314,15 +453,19 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
         sm.set_provider_overrides(body.provider_overrides)
 
     def run_tumble():
+        orch = None
         try:
             sm = StateManager(project_dir)
             overrides = sm.get_provider_overrides()
 
             # Create providers using three-tier resolution
+            specifier_config = resolve_agent_provider(config, "specifier", overrides)
             architect_config = resolve_agent_provider(config, "architect", overrides)
             engineer_config = resolve_agent_provider(config, "engineer", overrides)
             verifier_config = resolve_agent_provider(config, "verifier", overrides)
 
+            specifier_provider = create_provider(specifier_config)
+            specifier_provider._resolved_name = specifier_config.name
             architect_provider = create_provider(architect_config)
             architect_provider._resolved_name = architect_config.name
             engineer_provider = create_provider(engineer_config)
@@ -330,6 +473,10 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
             verifier_provider = create_provider(verifier_config)
             verifier_provider._resolved_name = verifier_config.name
 
+            specifier = SpecifierAgent(
+                specifier_provider,
+                nothink_override=config.agent_nothink.get("specifier"),
+            )
             architect = ArchitectAgent(
                 architect_provider,
                 nothink_override=config.agent_nothink.get("architect"),
@@ -348,6 +495,7 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
                 event_bus=event_bus,
                 config=config,
                 workspace_root=_get_workspace(request),
+                specifier=specifier,
                 architect=architect,
                 engineer=engineer,
                 verifier=verifier,
@@ -363,7 +511,12 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
                 "error": str(e),
             })
         finally:
-            request.app.state.active_orchestrators.pop(name, None)
+            # Only deregister OUR orchestrator. A stop() -> start() sequence can
+            # register a new run before the old thread's finally executes; an
+            # unconditional pop would deregister the NEW run, making it invisible
+            # to is_running/stop and allowing a concurrent duplicate start.
+            if request.app.state.active_orchestrators.get(name) is orch:
+                request.app.state.active_orchestrators.pop(name, None)
 
     thread = threading.Thread(target=run_tumble, daemon=True)
     thread.start()
@@ -432,7 +585,7 @@ async def get_project_providers(name: str, request: Request):
     overrides = sm.get_provider_overrides()
 
     effective = {}
-    for agent_name in ("architect", "engineer", "verifier"):
+    for agent_name in AGENT_ROLES:
         try:
             pc = resolve_agent_provider(config, agent_name, overrides)
             effective[agent_name] = {
@@ -459,7 +612,7 @@ async def update_project_providers(name: str, body: UpdateProjectProviders, requ
     config = request.app.state.config
 
     for agent_name, provider_name in body.provider_overrides.items():
-        if agent_name not in ("architect", "engineer", "verifier"):
+        if agent_name not in AGENT_ROLES:
             raise HTTPException(400, f"Invalid agent name: {agent_name}")
         if provider_name not in config.providers:
             raise HTTPException(400, f"Provider '{provider_name}' not found")

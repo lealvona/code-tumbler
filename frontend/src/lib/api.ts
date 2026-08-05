@@ -11,6 +11,10 @@ import type {
   CostByProvider,
   CostPerIteration,
   ConversationMessage,
+  SpecInfo,
+  Rule,
+  GlobalRulesData,
+  ProjectRulesData,
 } from "./types";
 
 /** Build the backend base URL, bypassing the Next.js rewrite proxy. */
@@ -102,6 +106,29 @@ export const api = {
   getConversation: (name: string) =>
     fetchJSON<ConversationMessage[]>(`/api/projects/${name}/conversation`),
 
+  // ── Phase-1 spec suite ──────────────────────────────────────────────
+  getSpec: (name: string) => fetchJSON<SpecInfo>(`/api/projects/${name}/spec`),
+
+  getSpecFile: (name: string, filePath: string) =>
+    fetchJSON<{ path: string; content: string; size: number }>(
+      `/api/projects/${name}/spec/${filePath}`
+    ),
+
+  saveSpecFile: (name: string, filePath: string, content: string) =>
+    fetchJSON<{ status: string; path: string; size: number }>(
+      `/api/projects/${name}/spec/${filePath}`,
+      { method: "PUT", body: JSON.stringify({ content }) }
+    ),
+
+  exportSpec: (name: string) =>
+    fetchJSON<Record<string, unknown>>(`/api/projects/${name}/spec/export`),
+
+  importSpec: (name: string, archive: Record<string, unknown>) =>
+    fetchJSON<{ status: string; files: number; complete: boolean }>(
+      `/api/projects/${name}/spec/import`,
+      { method: "POST", body: JSON.stringify(archive) }
+    ),
+
   getProjectProviders: (name: string) =>
     fetchJSON<ProjectProviders>(`/api/projects/${name}/providers`),
 
@@ -144,4 +171,54 @@ export const api = {
     fetchJSON<CostPerIteration[]>(
       `/api/analytics/cost-per-iteration?project=${project}`
     ),
+
+  // ── Rules Ledger ────────────────────────────────────────────────────
+  getGlobalRules: () => fetchJSON<GlobalRulesData>("/api/rules"),
+
+  addGlobalRule: (text: string, category: string) =>
+    fetchJSON<Rule>("/api/rules", {
+      method: "POST",
+      body: JSON.stringify({ text, category }),
+    }),
+
+  replaceGlobalRules: (rules: Rule[]) =>
+    fetchJSON<{ status: string; count: number }>("/api/rules", {
+      method: "PUT",
+      body: JSON.stringify({ rules }),
+    }),
+
+  deleteGlobalRule: (id: string) =>
+    fetchJSON<{ status: string }>(`/api/rules/${id}`, { method: "DELETE" }),
+
+  getProjectRules: (name: string) =>
+    fetchJSON<ProjectRulesData>(`/api/projects/${name}/rules`),
+
+  addProjectRule: (name: string, text: string, category: string) =>
+    fetchJSON<Rule>(`/api/projects/${name}/rules`, {
+      method: "POST",
+      body: JSON.stringify({ text, category }),
+    }),
+
+  replaceProjectRules: (name: string, rules: Rule[]) =>
+    fetchJSON<{ status: string; count: number }>(`/api/projects/${name}/rules`, {
+      method: "PUT",
+      body: JSON.stringify({ rules }),
+    }),
+
+  deleteProjectRule: (name: string, id: string) =>
+    fetchJSON<{ status: string }>(`/api/projects/${name}/rules/${id}`, {
+      method: "DELETE",
+    }),
+
+  promoteCandidate: (name: string, candidate_id: string, scope: "project" | "global", text?: string) =>
+    fetchJSON<{ status: string; rule: Rule }>(`/api/projects/${name}/rules/promote`, {
+      method: "POST",
+      body: JSON.stringify({ candidate_id, scope, text }),
+    }),
+
+  dismissCandidate: (name: string, candidate_id: string) =>
+    fetchJSON<{ status: string }>(`/api/projects/${name}/candidates/dismiss`, {
+      method: "POST",
+      body: JSON.stringify({ candidate_id }),
+    }),
 };

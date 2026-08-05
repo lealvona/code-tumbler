@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 const phases: { key: ProjectPhase; label: string }[] = [
   { key: "idle", label: "Idle" },
+  { key: "specifying", label: "Spec" },
   { key: "planning", label: "Plan" },
   { key: "engineering", label: "Code" },
   { key: "verifying", label: "Verify" },
@@ -13,10 +14,11 @@ const phases: { key: ProjectPhase; label: string }[] = [
 
 const phaseOrder: Record<string, number> = {
   idle: 0,
-  planning: 1,
-  engineering: 2,
-  verifying: 3,
-  completed: 4,
+  specifying: 1,
+  planning: 2,
+  engineering: 3,
+  verifying: 4,
+  completed: 5,
   failed: -1,
 };
 

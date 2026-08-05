@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.event_bus import EventBus
-from api.routes import health, projects, providers, config_routes, events, analytics
+from api.routes import health, projects, providers, config_routes, events, analytics, rules
 from api.seed_demo import seed_demo_project
 from db.session import init_engines
 from utils.config import load_config
@@ -55,7 +55,7 @@ def create_app() -> FastAPI:
     workspace = Path(app.state.config.workspace.base_path)
     if not workspace.is_absolute():
         workspace = backend_root / workspace
-    seed_demo_project(workspace.resolve())
+    seed_demo_project(workspace.resolve(), active_provider=app.state.config.active_provider)
 
     # Register route modules
     app.include_router(health.router, prefix="/api")
@@ -64,5 +64,6 @@ def create_app() -> FastAPI:
     app.include_router(config_routes.router, prefix="/api")
     app.include_router(events.router, prefix="/api")
     app.include_router(analytics.router, prefix="/api")
+    app.include_router(rules.router, prefix="/api")
 
     return app

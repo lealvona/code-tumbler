@@ -58,14 +58,41 @@ class RuntimeInfo:
 # per-phase containers (see the Python runtime note below).
 _PY_DEPS = ".sandbox_deps"
 
+# Manifest-aware install: tools first (always succeed), then whichever manifest
+# exists. Guards against a generated project that references a manifest it didn't
+# actually write (runtime detection can fall back to plan text), which previously
+# hard-failed install on "Could not open requirements file".
+_PY_INSTALL_CMD = (
+    # 1. Test tools (always). 2. requirements.txt (strict — a broken manifest
+    # should fail install visibly). 3. Dev-requirements variants (tolerant).
+    # 4. The package itself with dev extras (src-layout projects put test deps
+    # like moto in [dev]); fall back to bare package, then continue regardless.
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8 && "
+    f"if [ -f requirements.txt ]; then "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt; "
+    f"fi && "
+    f'for R in requirements-dev.txt dev-requirements.txt requirements_dev.txt; do '
+    f'[ ! -f "$R" ] || pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r "$R" || true; done && '
+    f"if [ -f pyproject.toml ]; then "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} '.[dev]' 2>&1 || "
+    f"pip install --no-cache-dir --upgrade --no-deps --target={_PY_DEPS} . 2>&1 || true; "
+    f"fi"
+)
+
 # Prefer a tests/ dir (keeps pytest's rootdir/conftest scan away from .sandbox_deps);
 # fall back to the workspace root. PYTHONPATH makes the installed deps importable.
 _PY_TEST_CMD = (
-    f'PYTHONPATH={_PY_DEPS} python -m pytest "$([ -d tests ] && echo tests || echo .)" '
-    f'-x --tb=short --ignore={_PY_DEPS} -p no:cacheprovider 2>&1 || true'
+    # PYTHONPATH comes from the container-level env exports (src, workspace,
+    # .sandbox_deps) — no inline prefix here, it would shadow the exports.
+    # No -x and --continue-on-collection-errors: one broken test module must
+    # not zero out the whole run — partial pass/fail counts are exactly the
+    # signal the feedback loop needs to converge.
+    f'python -m pytest "$([ -d tests ] && echo tests || echo .)" '
+    f'--tb=short --continue-on-collection-errors --ignore={_PY_DEPS} '
+    f'-p no:cacheprovider 2>&1 || true'
 )
 _PY_LINT_CMD = (
-    f'PYTHONPATH={_PY_DEPS} python -m flake8 . --count --select=E9,F63,F7,F82 '
+    f'python -m flake8 . --count --select=E9,F63,F7,F82 '
     f'--show-source --statistics '
     f'--exclude .venv,venv,node_modules,dist,build,__pycache__,.git,{_PY_DEPS} 2>&1 || true'
 )
@@ -93,7 +120,7 @@ _RUNTIME_MARKERS = [
     ("requirements.txt", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt pytest flake8"],
+        install_commands=[_PY_INSTALL_CMD],
         build_commands=[],
         test_commands=[_PY_TEST_CMD],
         lint_commands=[_PY_LINT_CMD],
@@ -101,7 +128,7 @@ _RUNTIME_MARKERS = [
     ("pyproject.toml", lambda: RuntimeInfo(
         language="python",
         image="python:3.12-slim",
-        install_commands=[f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} . pytest flake8 2>&1 || pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8"],
+        install_commands=[_PY_INSTALL_CMD],
         build_commands=[],
         test_commands=[_PY_TEST_CMD],
         lint_commands=[_PY_LINT_CMD],
@@ -246,12 +273,56 @@ class SandboxExecutor:
 
         # Connect via DOCKER_HOST env var (points to socket proxy)
         docker_host = os.environ.get("DOCKER_HOST")
-        if docker_host:
-            self.client = docker.DockerClient(base_url=docker_host)
-        else:
-            self.client = docker.from_env()
+        self.client = self._connect_with_recovery(docker_host)
 
         logger.info(f"SandboxExecutor initialized (docker_host={docker_host or 'local socket'})")
+
+    @staticmethod
+    def _connect_with_recovery(docker_host: Optional[str]):
+        """Connect to Docker; if the daemon is down, optionally revive it.
+
+        When DOCKER_RECOVERY_CMD is set (e.g. `systemctl --user start
+        docker-desktop` for a host-run backend using Docker Desktop), a failed
+        connection runs that command and polls up to 60s for the daemon to come
+        back before giving up. Without it, behavior is unchanged: the caller
+        falls back to code-review-only verification.
+        """
+        def _connect():
+            client = (docker.DockerClient(base_url=docker_host)
+                      if docker_host else docker.from_env())
+            client.ping()
+            return client
+
+        try:
+            return _connect()
+        except Exception as first_err:
+            recovery_cmd = os.environ.get("DOCKER_RECOVERY_CMD", "").strip()
+            if not recovery_cmd:
+                raise
+            logger.warning(
+                f"Docker daemon unreachable ({first_err}); attempting recovery "
+                f"via DOCKER_RECOVERY_CMD: {recovery_cmd}"
+            )
+            import shlex
+            import subprocess
+            try:
+                subprocess.run(
+                    shlex.split(recovery_cmd), timeout=30, check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except Exception as rec_err:
+                logger.warning(f"Docker recovery command failed to run: {rec_err}")
+                raise first_err
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                try:
+                    client = _connect()
+                    logger.info("Docker daemon recovered — sandbox available again")
+                    return client
+                except Exception:
+                    time.sleep(2)
+            logger.warning("Docker daemon did not come back within 60s")
+            raise first_err
 
     def _ensure_image(self, image: str) -> None:
         """Pull the base image if not already present."""
@@ -626,7 +697,7 @@ class SandboxExecutor:
             # /workspace first so project modules import (bare `pytest` does not
             # add rootdir to sys.path the way `python -m pytest` does).
             env_exports = [
-                f"export PYTHONPATH=/workspace:/workspace/{_PY_DEPS}",
+                f"export PYTHONPATH=/workspace/src:/workspace:/workspace/{_PY_DEPS}",
                 f"export PATH=/workspace/{_PY_DEPS}/bin:$PATH",
             ]
 

@@ -1,10 +1,31 @@
 export type ProjectPhase =
   | "idle"
+  | "specifying"
   | "planning"
   | "engineering"
   | "verifying"
   | "completed"
   | "failed";
+
+export type SpecLayerStatus = "pending" | "start" | "writing" | "done";
+
+export interface SpecLayer {
+  path: string;
+  status: SpecLayerStatus;
+  snippet?: string;
+}
+
+export interface SpecFileMeta {
+  path: string;
+  size: number;
+}
+
+export interface SpecInfo {
+  enabled: boolean;
+  complete: boolean;
+  required: string[];
+  files: SpecFileMeta[];
+}
 
 export interface ProjectSummary {
   name: string;
@@ -34,6 +55,7 @@ export interface ProjectStatus {
   max_iterations: number;
   quality_threshold: number;
   last_score: number | null;
+  best_score?: number | null;
   last_update: string;
   start_time: string;
   is_running: boolean;
@@ -132,7 +154,7 @@ export interface CostPerIteration {
 
 export interface ConversationMessage {
   timestamp: string;
-  agent: "architect" | "engineer" | "verifier" | "system";
+  agent: "specifier" | "architect" | "engineer" | "verifier" | "system";
   role: "input" | "output" | "error" | "status" | "sandbox";
   iteration: number;
   content: string;
@@ -146,6 +168,40 @@ export interface ConversationMessage {
     duration_s?: number;
     commands?: string[];
   };
+}
+
+export interface Rule {
+  id: string;
+  scope: "global" | "project";
+  category: string;
+  text: string;
+  source: "manual" | "seed" | "promoted";
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface RuleCandidate {
+  id: string;
+  signature: string;
+  category: string;
+  evidence: string;
+  suggested_text: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface GlobalRulesData {
+  categories: string[];
+  rules: Rule[];
+}
+
+export interface ProjectRulesData {
+  categories: string[];
+  global_rules: Rule[];
+  project_rules: Rule[];
+  effective: Rule[];
+  candidates: RuleCandidate[];
 }
 
 export interface SandboxPhaseEvent {
