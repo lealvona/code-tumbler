@@ -718,6 +718,7 @@ class APIOrchestrator(Orchestrator):
             # Sustained-quality policy state: (iteration, score, recognized)
             quality_history: list[tuple] = []
             first_hit_iteration = None
+            consecutive_reverts = 0
             consecutive_failures = 0
             max_consecutive_failures = 3
             plateau_window = 3  # stop only if NOTHING observable changed this many times
@@ -771,7 +772,10 @@ class APIOrchestrator(Orchestrator):
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
                 self._snapshot_best(project_path, state_mgr, score)
-                if self._revert_to_best(project_path, state_mgr, score):
+                reverted = self._revert_to_best(project_path, state_mgr, score,
+                                                consecutive_reverts + 1)
+                consecutive_reverts = consecutive_reverts + 1 if reverted else 0
+                if reverted:
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
                         content=(
@@ -855,6 +859,7 @@ class APIOrchestrator(Orchestrator):
                     and getattr(vres, "build_success", False)
                     and (getattr(vres, "tests_total", 0) or 0) > 0
                     and getattr(vres, "tests_passed", 0) == getattr(vres, "tests_total", 0)
+                    and getattr(vres, "gates_passed", False)
                 )
                 quality_history.append((iteration, score, recognized))
                 hit = recognized and score >= self.quality_threshold
@@ -879,6 +884,11 @@ class APIOrchestrator(Orchestrator):
                     )
                 elif hit and (not min_required or iteration >= min_required):
                     done_reason = f"quality threshold met ({score} ≥ {self.quality_threshold})"
+                elif consecutive_reverts >= 4:
+                    done_reason = (
+                        "converged at best iteration — 4 consecutive refinement "
+                        "attempts were rejected as regressions"
+                    )
                 elif iteration >= self.max_iterations:
                     done_reason = f"maximum iterations ({self.max_iterations}) reached"
 
@@ -899,12 +909,19 @@ class APIOrchestrator(Orchestrator):
                     break
                 else:
                     if score >= self.quality_threshold and not recognized:
-                        why = ("sandbox did not run" if vres is None
-                               or getattr(vres, "code_review_only", False)
-                               else f"{getattr(vres, 'tests_total', 0) - getattr(vres, 'tests_passed', 0)} "
-                                    f"of {getattr(vres, 'tests_total', 0)} tests failing"
-                               if (getattr(vres, "tests_total", 0) or 0) > 0
-                               else "no tests collected")
+                        gates = getattr(vres, "section_gates", {}) or {}
+                        failing = [k for k, v in gates.items() if not v.get("pass")]
+                        if vres is None or getattr(vres, "code_review_only", False):
+                            why = "sandbox did not run"
+                        elif (getattr(vres, "tests_total", 0) or 0) == 0:
+                            why = "no tests collected"
+                        elif getattr(vres, "tests_passed", 0) != getattr(vres, "tests_total", 0):
+                            why = (f"{getattr(vres, 'tests_total', 0) - getattr(vres, 'tests_passed', 0)} "
+                                   f"of {getattr(vres, 'tests_total', 0)} tests failing")
+                        elif failing:
+                            why = "section gates below 85%: " + ", ".join(failing)
+                        else:
+                            why = "recognition conditions not met"
                         msg = (f"Score {score}/100 is above threshold but NOT recognized "
                                f"({why}) — all tests must pass. Continuing.")
                         label = "Not Recognized"
