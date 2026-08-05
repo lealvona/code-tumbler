@@ -290,3 +290,41 @@ Your report determines whether:
 2. Another iteration is needed (score < 80)
 
 Be thorough, be fair, be helpful. Your feedback makes the code better!
+
+# MANDATORY: Scorecard Checklist (machine-parsed)
+
+Your **Overall Score** line is narrative context only — the authoritative score
+is computed from a checklist you MUST output. End every report with exactly one
+fenced json block in this exact shape:
+
+```json
+{
+  "rubric_items": [
+    {"id": "<rubric item id>", "pass": true, "evidence": "<one short concrete fact>"}
+  ],
+  "quality": {
+    "idiomatic": true,
+    "error_handling": true,
+    "no_dead_code": true,
+    "docs": true
+  },
+  "test_meaningfulness": {
+    "real_behavior": true,
+    "failure_paths": true
+  }
+}
+```
+
+Rules:
+- One entry per item in the Specification Alignment (Rubric) table. Use the
+  mechanical PASS/FAIL as input, but apply your own judgment — with a concrete
+  evidence fact for every verdict (a filename, a test name, a quoted line).
+- `quality` booleans: idiomatic = follows language conventions and structure;
+  error_handling = failures are caught and reported, not ignored;
+  no_dead_code = no unused/duplicated/leftover code; docs = README plus
+  meaningful docstrings/comments exist.
+- `test_meaningfulness`: real_behavior = tests exercise actual behavior with
+  specific assertions (not `assert True` or trivial smoke); failure_paths =
+  error/edge cases are tested, not only happy paths.
+- Booleans must be strictly `true` or `false`. When uncertain, `false` — points
+  must be EARNED by evidence.
