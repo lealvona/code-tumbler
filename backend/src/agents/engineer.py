@@ -189,12 +189,17 @@ Focus on:
 1. Fixing failing tests
 2. Resolving build errors
 3. Addressing linting issues
-4. Improving code quality
 
-Generate the COMPLETE file tree again as JSON (even files that didn't change).
+REGRESSION GUARD (critical):
+- Output ONLY the files you are CHANGING or ADDING. All other files are
+  preserved automatically — do NOT re-emit them.
+- Never touch a file whose tests already pass unless the feedback directly
+  implicates it. Rewriting working code is how scores regress.
+- Keep changes minimal and targeted at the specific failures in the feedback.
+- When you change a file, output its COMPLETE new content (no diffs/ellipses).
 
-Output a single pure JSON object with a "files" array containing the COMPLETE
-updated file set:
+Output a single pure JSON object with a "files" array containing ONLY the
+changed or added files:
 {{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
 
@@ -469,7 +474,10 @@ updated file set:
         )
         planned_files = self._extract_planned_files(plan)
 
-        if not planned_files or not self._needs_chunking(planned_files, budget):
+        # Refinement iterations are incremental (only changed files) — always a
+        # single request. Chunking would regenerate the full tree and reintroduce
+        # regression risk; it exists for the big iteration-1 build-out only.
+        if iteration > 1 or not planned_files or not self._needs_chunking(planned_files, budget):
             # Single-request path (normal case)
             files = self._generate_single(
                 plan, iteration, feedback, previous_code, output_dir, **kwargs
@@ -533,7 +541,8 @@ updated file set:
         # these" request is far more reliable than hoping the next full iteration
         # fixes it — and cheaper than burning a verify cycle on incomplete code.
         try:
-            files = self._ensure_critical_files(plan, files, iteration, feedback, **kwargs)
+            files = self._ensure_critical_files(plan, files, iteration, feedback,
+                                                existing=previous_code, **kwargs)
         except Exception as e:
             logger.warning(f"Completeness pass failed (continuing with generated set): {e}")
 
@@ -557,17 +566,22 @@ updated file set:
 
     def _ensure_critical_files(self, plan: str, files: Dict[str, str],
                                iteration: int, feedback: Optional[str],
+                               existing: Optional[Dict[str, str]] = None,
                                **kwargs) -> Dict[str, str]:
         """One bounded completion request for critical/planned files that are
         missing from the generated set. Never overwrites files already produced.
+
+        `existing` = files already in staging from prior iterations; refinement
+        outputs are incremental, so completeness is judged on the union.
         """
         if not files:
             return files
 
+        effective = set(files) | set(existing or {})
         planned = self._extract_planned_files(plan) or []
-        missing_planned = [p for p in planned if p not in files]
-        has_manifest = any(f.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for f in files)
-        has_tests = any(self._is_test_path(f) for f in files)
+        missing_planned = [p for p in planned if p not in effective]
+        has_manifest = any(f.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for f in effective)
+        has_tests = any(self._is_test_path(f) for f in effective)
 
         if has_manifest and has_tests and not missing_planned:
             return files  # complete — no extra call

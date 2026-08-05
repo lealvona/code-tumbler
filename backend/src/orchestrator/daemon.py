@@ -942,6 +942,39 @@ class Orchestrator:
             plan_file = project_path / "02_plan" / "PLAN.md"
             plan_file.touch()
 
+    def _snapshot_best(self, project_path: Path, state_mgr: StateManager, score: float):
+        """Keep a copy of staging whenever the score improves.
+
+        The engineer can regress on later iterations (a bad rewrite after a good
+        one); when the run is force-finalized at max_iterations, we archive the
+        BEST iteration's code, not whatever the last roll of the dice produced.
+        """
+        import shutil
+        state = state_mgr.load_state()
+        best = state.get('best_score')
+        if best is not None and score <= best:
+            return
+        staging = project_path / "03_staging"
+        if not staging.exists():
+            return
+        dest = project_path / ".tumbler" / "best_staging"
+        try:
+            if dest.exists():
+                from orchestrator.state_manager import _CLEARABLE_STATE_SUBDIRS
+                state_mgr._safe_clear_dir(dest, allowed_names=_CLEARABLE_STATE_SUBDIRS)
+            shutil.copytree(
+                staging, dest, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    '.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv',
+                    '.git', 'dist', 'build', '.manifest.json'),
+            )
+            state = state_mgr.load_state()
+            state['best_score'] = score
+            state_mgr.save_state(state)
+            self.logger.info(f"Snapshotted best iteration (score {score}/100)")
+        except OSError as e:
+            self.logger.warning(f"Best-iteration snapshot failed: {e}")
+
     def _finalize_project(self, project_path: Path, state_mgr: StateManager):
         """Finalize a completed project.
 
@@ -962,6 +995,23 @@ class Orchestrator:
         final_dir.mkdir(parents=True, exist_ok=True)
 
         staging_dir = project_path / "03_staging"
+
+        # Archive the BEST iteration if the final one regressed below it.
+        state = state_mgr.load_state()
+        best_score = state.get('best_score')
+        last_score = state.get('last_score')
+        best_dir = project_path / ".tumbler" / "best_staging"
+        if (best_score is not None and last_score is not None
+                and best_score > last_score and best_dir.exists()
+                and any(best_dir.iterdir())):
+            self.logger.info(
+                f"Final iteration scored {last_score}/100 but iteration snapshot "
+                f"with {best_score}/100 exists — archiving the best iteration."
+            )
+            staging_dir = best_dir
+            state['last_score'] = best_score
+            state_mgr.save_state(state)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         archive_name = f"{project_path.name}_{timestamp}"
 

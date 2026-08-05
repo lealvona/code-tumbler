@@ -746,6 +746,7 @@ class APIOrchestrator(Orchestrator):
                 # the run even if the coarse score hasn't moved yet.
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
+                self._snapshot_best(project_path, state_mgr, score)
                 vres = getattr(self.verifier, "last_result", None)
                 staging = project_path / "03_staging"
                 skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv'}
