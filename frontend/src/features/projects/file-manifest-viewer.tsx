@@ -140,6 +140,32 @@ function FileRowControlled({
 }
 
 /**
+ * Tolerant extractor for BROKEN manifest JSON (truncated streams, continuation
+ * text appended out-of-band, interleaved chunk outputs). Regex-scans for
+ * "path"/"content" string pairs and JSON-unescapes them, so the UI can render
+ * a proper per-file code view instead of dumping raw JSON through markdown.
+ * Returns null unless at least one complete pair is found.
+ */
+export function tryExtractFileManifest(content: string): FileEntry[] | null {
+  if (!content.includes('"path"') || !content.includes('"content"')) return null;
+  const re =
+    /"path"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  const files: FileEntry[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    try {
+      files.push({
+        path: JSON.parse(`"${m[1]}"`),
+        content: JSON.parse(`"${m[2]}"`),
+      });
+    } catch {
+      // skip malformed pair
+    }
+  }
+  return files.length > 0 ? files : null;
+}
+
+/**
  * Try to parse a string as a file manifest (JSON array of {path, content}).
  * Returns the parsed array or null if it's not a valid manifest.
  */

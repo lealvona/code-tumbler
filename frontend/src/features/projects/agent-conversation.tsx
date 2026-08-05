@@ -15,6 +15,7 @@ import { SandboxOutput } from "./sandbox-output";
 import {
   FileManifestViewer,
   tryParseFileManifest,
+  tryExtractFileManifest,
 } from "./file-manifest-viewer";
 
 interface AgentConversationProps {
@@ -233,7 +234,10 @@ function AgentBubble({
   // Detect engineer file manifests (JSON array of {path, content})
   const fileManifest = useMemo(() => {
     if (message.agent === "engineer" && message.role === "output") {
-      return tryParseFileManifest(message.content);
+      return (
+        tryParseFileManifest(message.content) ??
+        tryExtractFileManifest(message.content)
+      );
     }
     return null;
   }, [message.agent, message.role, message.content]);
@@ -252,7 +256,12 @@ function AgentBubble({
       : message.content;
   const remainingLines = Math.max(0, lines.length - COLLAPSE_PREVIEW_LINES);
   // Never markdown-parse very large content even when expanded — plain text it.
-  const renderPlain = message.content.length > 30000 && !collapsed;
+  // Engineer output is machine JSON, not prose: markdown rendering destroys
+  // code formatting (indentation, #-comments, underscores), so force code view.
+  const isEngineerOutput =
+    message.agent === "engineer" && message.role === "output";
+  const renderPlain =
+    (message.content.length > 30000 && !collapsed) || isEngineerOutput;
 
   // Status messages are rendered as compact inline messages
   if (isStatus) {
