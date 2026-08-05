@@ -77,3 +77,6 @@ convo.json
 # ── Runtime project workspace (host-run backend) ──
 backend/projects/
 .sandbox_deps/
+
+# Timestamped config backups (cp file file.bak.$(date...) safety copies)
+backend/config.yaml.bak.*
