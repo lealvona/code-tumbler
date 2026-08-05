@@ -509,14 +509,25 @@ export function AgentConversation({
   // - Follow jumps instantly (no smooth animation fighting the user's wheel).
   const followRef = useRef(true);
   const autoScrollingRef = useRef(false);
+  const lastTopRef = useRef(0);
 
   const handleScroll = useCallback(() => {
     const vp = viewportRef.current;
     if (!vp) return;
+    const prevTop = lastTopRef.current;
+    lastTopRef.current = vp.scrollTop;
     const threshold = 80;
     const nearBottom =
       vp.scrollHeight - vp.scrollTop - vp.clientHeight < threshold;
     setIsNearBottom(nearBottom);
+    // Our programmatic follow-scrolls only ever move DOWN. Any upward movement
+    // is therefore user intent — covers scrollbar drags, PgUp/Home, wheel,
+    // touch, everything — and beats any stale programmatic flag.
+    if (vp.scrollTop < prevTop - 1) {
+      followRef.current = false;
+      autoScrollingRef.current = false;
+      return;
+    }
     if (autoScrollingRef.current) {
       if (nearBottom) autoScrollingRef.current = false;
       return; // programmatic scroll — not user intent
@@ -547,21 +558,31 @@ export function AgentConversation({
     };
   }, [handleScroll]);
 
-  // Auto-scroll on new output only while following
+  // Auto-scroll on new output only while following. Only arm the programmatic
+  // flag when a scroll will actually happen — setting it with no subsequent
+  // scroll event left it stale, which swallowed the next real user scroll.
   useEffect(() => {
     if (!followRef.current) return;
     const vp = viewportRef.current;
     if (!vp) return;
-    autoScrollingRef.current = true;
-    vp.scrollTop = vp.scrollHeight;
+    const target = vp.scrollHeight - vp.clientHeight;
+    if (vp.scrollTop < target - 1) {
+      autoScrollingRef.current = true;
+      lastTopRef.current = target;
+      vp.scrollTop = target;
+    }
   }, [messages.length, activeThinking, activeStreaming]);
 
   const scrollToBottom = useCallback(() => {
     followRef.current = true;
     const vp = viewportRef.current;
     if (vp) {
-      autoScrollingRef.current = true;
-      vp.scrollTop = vp.scrollHeight;
+      const target = vp.scrollHeight - vp.clientHeight;
+      if (vp.scrollTop < target - 1) {
+        autoScrollingRef.current = true;
+        lastTopRef.current = target;
+        vp.scrollTop = target;
+      }
     }
     setIsNearBottom(true);
   }, []);
