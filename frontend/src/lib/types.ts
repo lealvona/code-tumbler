@@ -55,6 +55,7 @@ export interface ProjectStatus {
   max_iterations: number;
   quality_threshold: number;
   last_score: number | null;
+  best_score?: number | null;
   last_update: string;
   start_time: string;
   is_running: boolean;

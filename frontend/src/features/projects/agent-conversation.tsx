@@ -490,7 +490,17 @@ export function AgentConversation({
     }
   }, [events, projectName, fetchConversation]);
 
-  // Track whether user has scrolled up from the bottom
+  // Follow-latest scrolling, done right:
+  // - followRef: whether we auto-scroll on new output. Killed by explicit user
+  //   intent (wheel-up / touch drag), re-armed when the USER returns to the
+  //   bottom or clicks "jump to latest".
+  // - autoScrollingRef: marks programmatic scrolls so the scroll handler never
+  //   mistakes them for user intent. Without this, streaming reflows outrace
+  //   the position check and yank the user back down — a scroll-hijack.
+  // - Follow jumps instantly (no smooth animation fighting the user's wheel).
+  const followRef = useRef(true);
+  const autoScrollingRef = useRef(false);
+
   const handleScroll = useCallback(() => {
     const vp = viewportRef.current;
     if (!vp) return;
@@ -498,24 +508,52 @@ export function AgentConversation({
     const nearBottom =
       vp.scrollHeight - vp.scrollTop - vp.clientHeight < threshold;
     setIsNearBottom(nearBottom);
+    if (autoScrollingRef.current) {
+      if (nearBottom) autoScrollingRef.current = false;
+      return; // programmatic scroll — not user intent
+    }
+    followRef.current = nearBottom;
   }, []);
 
   useEffect(() => {
     const vp = viewportRef.current;
     if (!vp) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        followRef.current = false;
+        autoScrollingRef.current = false;
+      }
+    };
+    const onTouchMove = () => {
+      followRef.current = false;
+      autoScrollingRef.current = false;
+    };
     vp.addEventListener("scroll", handleScroll, { passive: true });
-    return () => vp.removeEventListener("scroll", handleScroll);
+    vp.addEventListener("wheel", onWheel, { passive: true });
+    vp.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      vp.removeEventListener("scroll", handleScroll);
+      vp.removeEventListener("wheel", onWheel);
+      vp.removeEventListener("touchmove", onTouchMove);
+    };
   }, [handleScroll]);
 
-  // Auto-scroll only when user is already at the bottom
+  // Auto-scroll on new output only while following
   useEffect(() => {
-    if (isNearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages.length, activeThinking, activeStreaming, isNearBottom]);
+    if (!followRef.current) return;
+    const vp = viewportRef.current;
+    if (!vp) return;
+    autoScrollingRef.current = true;
+    vp.scrollTop = vp.scrollHeight;
+  }, [messages.length, activeThinking, activeStreaming]);
 
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    followRef.current = true;
+    const vp = viewportRef.current;
+    if (vp) {
+      autoScrollingRef.current = true;
+      vp.scrollTop = vp.scrollHeight;
+    }
     setIsNearBottom(true);
   }, []);
 

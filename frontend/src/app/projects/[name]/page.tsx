@@ -148,9 +148,29 @@ export default function ProjectDetailPage() {
             <span className="text-sm text-muted-foreground">
               Iteration {status.iteration} / {status.max_iterations}
             </span>
+            {/* Running score — prominent, color-coded against the threshold */}
             {status.last_score !== null && (
-              <span className="text-sm text-muted-foreground">
-                Score: {status.last_score}/100
+              <span className="inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-0.5 bg-card">
+                <span
+                  className={`text-xl font-bold leading-none tabular-nums ${
+                    status.last_score >= status.quality_threshold
+                      ? "text-green-600 dark:text-green-400"
+                      : status.last_score >= 50
+                        ? "text-yellow-600 dark:text-yellow-400"
+                        : "text-red-600 dark:text-red-400"
+                  }`}
+                >
+                  {status.last_score}
+                </span>
+                <span className="text-[10px] text-muted-foreground leading-none">
+                  /100 · target {status.quality_threshold}
+                </span>
+                {status.best_score != null &&
+                  status.best_score > (status.last_score ?? 0) && (
+                    <span className="text-[10px] text-muted-foreground leading-none">
+                      · best {status.best_score}
+                    </span>
+                  )}
               </span>
             )}
           </div>
