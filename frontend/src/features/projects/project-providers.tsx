@@ -20,7 +20,7 @@ interface ProjectProviderConfigProps {
   isRunning: boolean;
 }
 
-const AGENTS = ["architect", "engineer", "verifier"] as const;
+const AGENTS = ["specifier", "architect", "engineer", "verifier"] as const;
 
 export function ProjectProviderConfig({
   projectName,

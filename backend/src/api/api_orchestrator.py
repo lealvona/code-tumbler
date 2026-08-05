@@ -33,11 +33,14 @@ class APIOrchestrator(Orchestrator):
         if self._config is None:
             return
         overrides = state_mgr.get_provider_overrides()
-        for agent_name, agent_obj in [
+        agents = [
             ("architect", self.architect),
             ("engineer", self.engineer),
             ("verifier", self.verifier),
-        ]:
+        ]
+        if self.specifier is not None:
+            agents.insert(0, ("specifier", self.specifier))
+        for agent_name, agent_obj in agents:
             provider_config = resolve_agent_provider(self._config, agent_name, overrides)
             current_name = getattr(agent_obj.provider, '_resolved_name', None)
             if current_name != provider_config.name:
@@ -99,7 +102,11 @@ class APIOrchestrator(Orchestrator):
             full_content.append(chunk)
             buf_chars[0] += len(chunk)
             now = time.monotonic()
-            if buf_chars[0] >= 200 or (now - last_flush[0]) >= 0.2:
+            # 1000 chars / 300ms: fast providers (Kimi) emit thousands of
+            # chars/sec — the old 200-char flush produced an SSE event flood
+            # that the frontend had to re-render for. ~3 events/sec is plenty
+            # for a live preview.
+            if buf_chars[0] >= 1000 or (now - last_flush[0]) >= 0.3:
                 flush()
 
         def get_full_content() -> str:
@@ -108,6 +115,146 @@ class APIOrchestrator(Orchestrator):
         on_chunk._flush = flush
         on_chunk._get_full_content = get_full_content
         return on_chunk
+
+    def _make_spec_scanner(self, project_path: Path):
+        """Create a streaming-JSON scanner that emits `spec_layer` SSE events.
+
+        Drives the animated YAML-layer index in the UI from the ACTUAL bytes the
+        model emits (no simulated progress): as each file's `"path"` value closes
+        we emit status=start; while its `"content"` value streams we emit
+        status=writing with a tail snippet; when it closes we emit status=done.
+
+        The authoritative file set still comes from the Specifier's final parse —
+        this scanner is presentation only, so it stays defensive and never raises.
+        """
+        state = {
+            "in_string": False,
+            "escape": False,
+            "buf": [],
+            "value_key": None,        # key this string is the value of (None = it's a key)
+            "pending_key": None,      # last completed key awaiting its value
+            "last_key_candidate": None,
+            "current_path": None,
+            "last_writing_emit": [0.0],
+        }
+
+        def emit(path, status, snippet=""):
+            self.event_bus.publish("spec_layer", {
+                "project": project_path.name,
+                "path": path,
+                "status": status,
+                "snippet": snippet,
+            })
+
+        def feed(chunk: str):
+            import time
+            try:
+                for c in chunk:
+                    if state["in_string"]:
+                        if state["escape"]:
+                            state["buf"].append(c)
+                            state["escape"] = False
+                        elif c == "\\":
+                            state["escape"] = True
+                        elif c == '"':
+                            # string closes
+                            value = "".join(state["buf"])
+                            state["in_string"] = False
+                            if state["value_key"] == "path":
+                                state["current_path"] = value
+                                emit(value, "start")
+                            elif state["value_key"] == "content":
+                                emit(state["current_path"], "done")
+                            elif state["value_key"] is None:
+                                state["last_key_candidate"] = value
+                            state["value_key"] = None
+                        else:
+                            state["buf"].append(c)
+                            if state["value_key"] == "content" and state["current_path"]:
+                                now = time.monotonic()
+                                if now - state["last_writing_emit"][0] >= 0.15:
+                                    state["last_writing_emit"][0] = now
+                                    tail = "".join(state["buf"])[-60:]
+                                    emit(state["current_path"], "writing", tail)
+                    else:
+                        if c == '"':
+                            state["in_string"] = True
+                            state["buf"] = []
+                            state["value_key"] = state["pending_key"]
+                            state["pending_key"] = None
+                        elif c == ":":
+                            state["pending_key"] = state["last_key_candidate"]
+                            state["last_key_candidate"] = None
+                        elif c in "{[":
+                            state["pending_key"] = None
+            except Exception:
+                pass  # presentation-only; never break generation
+
+        return feed
+
+    def _run_specifier(self, project_path: Path, state_mgr: StateManager):
+        """Phase 1: idea -> YAML spec suite, with live SSE (layer index + tokens)."""
+        self.event_bus.publish("phase_change", {
+            "project": project_path.name,
+            "phase": "specifying",
+        })
+        self.event_bus.publish("log", {
+            "project": project_path.name,
+            "message": "Specifier agent started - generating spec suite...",
+            "level": "info",
+        })
+
+        req_file = project_path / "01_input" / "requirements.txt"
+        if req_file.exists():
+            state_mgr.log_conversation(
+                agent="system", role="input", iteration=0,
+                content=req_file.read_text(encoding="utf-8"),
+                metadata={"label": "App Idea"},
+            )
+            self._publish_conversation_update(project_path, "system")
+
+        self._publish_thinking(project_path, "specifier")
+
+        chunk_cb = self._make_chunk_callback(project_path, "specifier")
+        scanner = self._make_spec_scanner(project_path)
+
+        def combined(chunk: str):
+            chunk_cb(chunk)
+            scanner(chunk)
+
+        self.specifier._on_chunk = combined
+        try:
+            super()._run_specifier(project_path, state_mgr)
+        except Exception as e:
+            state_mgr.log_conversation(
+                agent="specifier", role="error", iteration=0,
+                content=f"Specifier agent failed: {e}",
+                metadata={"label": "Error"},
+            )
+            self._publish_conversation_update(project_path, "specifier")
+            raise
+        finally:
+            chunk_cb._flush()
+            self.specifier._on_chunk = None
+
+        llm_response = chunk_cb._get_full_content()
+        if llm_response:
+            state_mgr.log_conversation(
+                agent="specifier", role="output", iteration=0,
+                content=llm_response,
+                metadata={"label": "Specification Suite"},
+            )
+            self._publish_conversation_update(project_path, "specifier")
+
+        self.event_bus.publish("phase_change", {
+            "project": project_path.name,
+            "phase": "specifying_complete",
+        })
+        self.event_bus.publish("log", {
+            "project": project_path.name,
+            "message": "Specifier agent completed - spec suite created",
+            "level": "info",
+        })
 
     def _run_architect(self, project_path: Path, state_mgr: StateManager):
         self.event_bus.publish("phase_change", {
@@ -310,6 +457,36 @@ class APIOrchestrator(Orchestrator):
 
         # Sandbox phase callback — publishes SSE events and persists to conversation
         def _on_sandbox_phase(phase_name: str, phase_data: dict):
+            # Sandbox outage: loud, dedicated signal — scores from this
+            # iteration are LLM-only and not grounded in real build/test runs.
+            if phase_name == "sandbox_unavailable":
+                reason = phase_data.get("reason", "unknown")
+                self.event_bus.publish("sandbox_unavailable", {
+                    "project": project_path.name,
+                    "iteration": iteration,
+                    "reason": reason,
+                })
+                state_mgr.log_conversation(
+                    agent="verifier", role="error", iteration=iteration,
+                    content=(
+                        "SANDBOX UNAVAILABLE — falling back to LLM-only code review. "
+                        "Scores this iteration are NOT grounded in real build/test "
+                        f"results. Reason: {reason}"
+                    ),
+                    metadata={"label": "Sandbox Unavailable"},
+                )
+                self._publish_conversation_update(project_path, "verifier")
+                return
+
+            # Auto-detect known failure signatures into the rules ledger as
+            # candidates (surfaced for review, NOT injected into prompts).
+            try:
+                from rules import RulesLedger
+                combined = (phase_data.get("stdout", "") or "") + "\n" + (phase_data.get("stderr", "") or "")
+                RulesLedger(self.workspace_root).detect_and_record(project_path, combined)
+            except Exception as e:
+                self.logger.debug(f"Rules auto-detect skipped: {e}")
+
             self.event_bus.publish("sandbox_phase", {
                 "project": project_path.name,
                 "phase": phase_name,
@@ -384,7 +561,7 @@ class APIOrchestrator(Orchestrator):
                 compression_metrics=self.verifier.last_compression_metrics or None,
             )
 
-            self.logger.info(f"Verification complete - Score: {score}/10")
+            self.logger.info(f"Verification complete - Score: {score}/100")
         except Exception as e:
             state_mgr.log_conversation(
                 agent="verifier", role="error", iteration=iteration,
@@ -421,7 +598,7 @@ class APIOrchestrator(Orchestrator):
         })
         self.event_bus.publish("log", {
             "project": project_path.name,
-            "message": f"Verifier completed - score: {score}/10",
+            "message": f"Verifier completed - score: {score}/100",
             "level": "info",
         })
 
@@ -524,16 +701,23 @@ class APIOrchestrator(Orchestrator):
             return
 
         try:
-            # Phase 1: Architect (skip if resuming with existing plan)
+            # Phase 1: Specifier (idea -> YAML spec suite), then Architect.
+            # Both are skipped when resuming from an existing plan. The Specifier
+            # is additionally skipped if disabled or already complete (idempotent
+            # on restart after a mid-run crash).
             if not resuming:
                 self._refresh_providers(state_mgr)
+                if (self.specifier is not None
+                        and state_mgr.is_spec_enabled()
+                        and not state_mgr.is_spec_complete()):
+                    self._run_specifier(project_path, state_mgr)
                 self._run_architect(project_path, state_mgr)
 
             # Phase 2-3: Engineer -> Verifier loop
-            score_history: list[float] = []
+            progress_history: list[tuple] = []
             consecutive_failures = 0
             max_consecutive_failures = 3
-            plateau_window = 3  # stop if score unchanged for this many iterations
+            plateau_window = 3  # stop only if NOTHING observable changed this many times
 
             while not self._stopped:
                 self._refresh_providers(state_mgr)
@@ -577,10 +761,29 @@ class APIOrchestrator(Orchestrator):
                 if self._stopped:
                     break
 
-                # Evaluate
+                # Evaluate — build a progress tuple: the plateau detector only
+                # trips when score AND concrete metrics are all identical, so
+                # real progress (more tests passing, more files) never stalls
+                # the run even if the coarse score hasn't moved yet.
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
-                score_history.append(score)
+                self._snapshot_best(project_path, state_mgr, score)
+                vres = getattr(self.verifier, "last_result", None)
+                staging = project_path / "03_staging"
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv'}
+                file_count = sum(
+                    1 for f in staging.rglob('*')
+                    if f.is_file() and not any(part in skip_dirs for part in f.relative_to(staging).parts[:-1])
+                ) if staging.exists() else 0
+                progress = (
+                    round(score, 1),
+                    getattr(vres, "tests_passed", None),
+                    getattr(vres, "tests_total", None),
+                    getattr(vres, "lint_issues", None),
+                    bool(getattr(vres, "build_success", False)),
+                    file_count,
+                )
+                progress_history.append(progress)
 
                 # Check cost budget
                 if self._check_cost_limit(project_path, state_mgr):
@@ -595,13 +798,17 @@ class APIOrchestrator(Orchestrator):
                     })
                     break
 
-                # Check for score plateau (no improvement over N iterations)
-                if len(score_history) >= plateau_window:
-                    recent = score_history[-plateau_window:]
-                    if max(recent) - min(recent) < 0.5:
+                # Plateau check: fail only when N consecutive iterations produced
+                # IDENTICAL progress tuples (score, tests, lint, build, file count).
+                # A moving score or improving metrics always continues the loop.
+                if len(progress_history) >= plateau_window:
+                    recent = progress_history[-plateau_window:]
+                    if all(t == recent[0] for t in recent):
+                        scores = [t[0] for t in recent]
                         msg = (
-                            f"Score plateau detected: scores {recent} over last "
-                            f"{plateau_window} iterations (no meaningful improvement). Stopping."
+                            f"No observable progress over {plateau_window} iterations "
+                            f"(score {scores[0]}/100, tests {recent[0][1]}/{recent[0][2]}, "
+                            f"{recent[0][5]} files — all unchanged). Stopping."
                         )
                         self.logger.warning(msg)
                         state_mgr.log_conversation(
@@ -610,7 +817,7 @@ class APIOrchestrator(Orchestrator):
                             metadata={"label": "Plateau"},
                         )
                         self._publish_conversation_update(project_path, "system")
-                        state_mgr.mark_failed(f"Score plateau: {recent}")
+                        state_mgr.mark_failed(f"No observable progress: {scores}")
                         self.event_bus.publish("project_failed", {
                             "project": project_path.name,
                             "error": msg,
@@ -621,7 +828,7 @@ class APIOrchestrator(Orchestrator):
                     self._finalize_project(project_path, state_mgr)
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Project completed! Final score: {score}/10 after {iteration} iteration(s).",
+                        content=f"Project completed! Final score: {score}/100 after {iteration} iteration(s).",
                         metadata={"label": "Completed", "score": score},
                     )
                     self._publish_conversation_update(project_path, "system")
@@ -634,7 +841,7 @@ class APIOrchestrator(Orchestrator):
                 else:
                     state_mgr.log_conversation(
                         agent="system", role="status", iteration=iteration,
-                        content=f"Score {score}/10 is below threshold ({self.quality_threshold}). Starting iteration {iteration + 1}...",
+                        content=f"Score {score}/100 is below threshold ({self.quality_threshold}/100). Starting iteration {iteration + 1}...",
                         metadata={"label": "Continuing"},
                     )
                     self._publish_conversation_update(project_path, "system")

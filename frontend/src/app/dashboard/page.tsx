@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback } from "react";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import { usePolling } from "@/hooks/use-polling";
 import { StatusPanel } from "@/features/dashboard/status-panel";
 import { GlobalStatsPanel } from "@/features/dashboard/global-stats";
 import { LiveLog } from "@/features/dashboard/live-log";
@@ -17,13 +18,10 @@ export default function DashboardPage() {
   const projects = useStore((s) => s.projects);
   const setProjects = useStore((s) => s.setProjects);
 
-  useEffect(() => {
-    api.listProjects().then(setProjects).catch(console.error);
-    const interval = setInterval(() => {
-      api.listProjects().then(setProjects).catch(() => {});
-    }, 10000);
-    return () => clearInterval(interval);
+  const refresh = useCallback(() => {
+    api.listProjects().then(setProjects).catch(() => {});
   }, [setProjects]);
+  usePolling(refresh, 10000); // pauses when the tab is hidden
 
   const activeProjects = projects.filter(
     (p) =>
@@ -65,7 +63,7 @@ export default function DashboardPage() {
                     <PhaseIndicator phase={project.status} />
                     {project.last_score !== null && (
                       <p className="text-xs text-muted-foreground mt-2">
-                        Score: {project.last_score}/10
+                        Score: {project.last_score}/100
                       </p>
                     )}
                   </CardContent>

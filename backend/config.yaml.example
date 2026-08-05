@@ -69,6 +69,37 @@ providers:
     timeout: 300
     # API key loaded from GOOGLE_API_KEY env var
 
+  # CLI: Claude Code (`claude` binary) — Opus 4.8 at high reasoning effort.
+  # Shells out to the host `claude` binary in headless mode; no API key (uses the
+  # account already logged in via `claude`). REQUIRES the backend to run on the
+  # HOST (the binary + credentials aren't in the container) and `claude` to be
+  # logged in. Template for other CLI providers (e.g. a future `codex`).
+  claude_opus_cli:
+    type: claude_cli
+    model: claude-opus-4-8
+    context_length: 200000
+    cost_per_1k_input_tokens: 0.0
+    cost_per_1k_output_tokens: 0.0
+    timeout: 600
+    extra_params:
+      effort: high            # low|medium|high|xhigh|max
+      # permission_mode: plan  # optional; omit for a plain text backend
+
+  # Cloud: Kimi K3 via the kimi-for-coding US endpoint (OpenAI-compatible).
+  # Flagship 1M-context model. Rides the existing OpenAI adapter unchanged —
+  # any OpenAI-compatible backend is pure config. Requires KIMI_API_KEY.
+  kimi_k3:
+    type: openai
+    base_url: https://api.moonshot.ai/v1     # China: https://api.moonshot.cn/v1
+    model: kimi-k3
+    api_key_env: KIMI_API_KEY
+    context_length: 1000000
+    cost_per_1k_input_tokens: 0.00095        # published pay-per-token rate; zero if flat plan
+    cost_per_1k_output_tokens: 0.004
+    temperature: 0.7
+    timeout: 600
+    concurrency_limit: 4
+
   # Custom: OpenAI-compatible endpoint (e.g., Open WebUI, LiteLLM)
   # custom_endpoint:
   #   type: openai
@@ -87,7 +118,7 @@ providers:
 # ── Tumbler Settings ─────────────────────────────────────────
 tumbler:
   max_iterations: 10
-  quality_threshold: 8.0
+  quality_threshold: 80        # 0-100 scale (legacy 0-10 values are auto-scaled x10)
   project_timeout: 3600           # seconds
   debounce_time: 3                # seconds
   max_cost_per_project: 0.0       # USD, 0 = no limit
@@ -102,17 +133,20 @@ tumbler:
     # COMPRESSION_MODEL=gemini-1.5-flash
 
 # ── Agent Provider Overrides (optional) ──────────────────────
-# Assign different models/providers per agent role.
+# Assign different models/providers per agent role. Roles (in lifecycle order):
+# specifier (Phase 1: idea -> YAML spec suite), architect, engineer, verifier.
 # Omit or leave empty to use active_provider for all agents.
 agent_providers:
-  # architect: anthropic_sonnet   # smart model for planning
+  # specifier: claude_opus_cli    # Phase 1 — turns the idea into a YAML spec suite
+  # architect: claude_opus_cli    # smart model for planning
   # engineer: ollama_local        # fast local model for coding
   # verifier: ollama_local        # local model for verification
 
 # ── Nothink Overrides (optional) ─────────────────────────────
 # Controls whether reasoning/thinking is suppressed per agent.
-# Only affects models that support /nothink (e.g., Qwen3).
+# Only affects models that support /nothink (e.g., Qwen3). Claude ignores it.
 agent_nothink:
+  # specifier: true               # a local reasoning model would otherwise think for minutes
   # architect: false
   # engineer: true
   # verifier: false

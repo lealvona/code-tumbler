@@ -92,6 +92,24 @@ class OpenAIProvider(LLMProvider):
             else:
                 raise
 
+    # Reserved extra_params keys consumed by the adapter, never sent to the API.
+    _RESERVED_EXTRA = {"force_temperature"}
+
+    def _effective_temperature(self, requested):
+        """Resolve temperature; force_temperature (e.g. Kimi's kimi-for-coding
+        accepts only temperature=1) overrides any requested value."""
+        forced = (self.config.extra_params or {}).get("force_temperature")
+        if forced is not None:
+            return float(forced)
+        return requested if requested is not None else self.config.temperature
+
+    def _extra_body(self):
+        """extra_params minus adapter-reserved keys (None if empty)."""
+        if not self.config.extra_params:
+            return None
+        body = {k: v for k, v in self.config.extra_params.items() if k not in self._RESERVED_EXTRA}
+        return body or None
+
     def chat(
         self,
         messages: List[Dict[str, str]],
@@ -117,7 +135,7 @@ class OpenAIProvider(LLMProvider):
         params = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.config.temperature,
+            "temperature": self._effective_temperature(temperature),
         }
 
         if max_tokens is not None:
@@ -126,8 +144,9 @@ class OpenAIProvider(LLMProvider):
             params["max_tokens"] = self.config.max_tokens
 
         # Pass extra_params from provider config as extra_body
-        if self.config.extra_params:
-            params["extra_body"] = self.config.extra_params
+        extra_body = self._extra_body()
+        if extra_body:
+            params["extra_body"] = extra_body
 
         # Add any extra parameters
         params.update(kwargs)
@@ -173,7 +192,7 @@ class OpenAIProvider(LLMProvider):
         params = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.config.temperature,
+            "temperature": self._effective_temperature(temperature),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -184,8 +203,9 @@ class OpenAIProvider(LLMProvider):
             params["max_tokens"] = self.config.max_tokens
 
         # Pass extra_params from provider config as extra_body
-        if self.config.extra_params:
-            params["extra_body"] = self.config.extra_params
+        extra_body = self._extra_body()
+        if extra_body:
+            params["extra_body"] = extra_body
 
         params.update(kwargs)
 
@@ -280,7 +300,7 @@ class OpenAIProvider(LLMProvider):
         params: Dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.config.temperature,
+            "temperature": self._effective_temperature(temperature),
         }
         if stream:
             params["stream"] = True
@@ -289,8 +309,9 @@ class OpenAIProvider(LLMProvider):
             params["max_tokens"] = max_tokens
         elif self.config.max_tokens is not None:
             params["max_tokens"] = self.config.max_tokens
-        if self.config.extra_params:
-            params["extra_body"] = self.config.extra_params
+        extra_body = self._extra_body()
+        if extra_body:
+            params["extra_body"] = extra_body
         params.update(kwargs)
         return params
 

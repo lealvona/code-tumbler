@@ -8,6 +8,7 @@ import {
   FolderKanban,
   Cpu,
   Settings,
+  ScrollText,
   Circle,
   Menu,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
+  { href: "/rules", label: "Rules", icon: ScrollText },
   { href: "/models", label: "Models", icon: Cpu },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

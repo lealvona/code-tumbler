@@ -83,6 +83,9 @@ class EngineerAgent(BaseAgent):
         feedback = context.get('feedback') or ''
         previous_code = context.get('previous_code') or {}
         chunk_info = context.get('chunk_info')
+        # rules may come via context or be stashed on the instance by generate_code
+        # (the single vs chunked paths build contexts separately).
+        rules = context.get('rules') or getattr(self, '_active_rules', None)
 
         # Build the chunk-specific task instruction suffix
         if chunk_info:
@@ -95,8 +98,8 @@ Generate ONLY the following files in this request:
 
 Do NOT generate files not in this list. Other files will be generated in separate requests.
 
-Output as a JSON array (only the files listed above):
-[{{"path": "...", "content": "..."}}, ...]
+Output a single JSON object with a "files" array (only the files listed above):
+{{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
         else:
             chunk_task = None
@@ -117,7 +120,7 @@ This is **iteration 1** - implement the project from scratch according to the pl
                 user_message += chunk_task
             else:
                 user_message += """
-Generate ALL files specified in the plan as a JSON array. Each file should have:
+Generate ALL files specified in the plan. Each file should have:
 - `path`: Relative path from project root
 - `content`: Complete file content
 
@@ -128,10 +131,10 @@ Ensure:
 4. All configuration files are complete
 5. Code is production-ready
 
-Output pure JSON (no markdown fences):
-```json
-[{{"path": "...", "content": "..."}}, ...]
-```
+Output a single pure JSON object (no markdown fences, no prose). The top-level
+value MUST be an object with one key "files" (strict JSON modes require an
+object, not a bare array):
+{{"files": [{{"path": "...", "content": "..."}}, ...]}}
 """
         else:
             # Refinement iteration - include actual previous code for context
@@ -186,13 +189,36 @@ Focus on:
 1. Fixing failing tests
 2. Resolving build errors
 3. Addressing linting issues
-4. Improving code quality
 
-Generate the COMPLETE file tree again as JSON (even files that didn't change).
+REGRESSION GUARD (critical):
+- Output ONLY the files you are CHANGING or ADDING. All other files are
+  preserved automatically — do NOT re-emit them.
+- Never touch a file whose tests already pass unless the feedback directly
+  implicates it. Rewriting working code is how scores regress.
+- Keep changes minimal and targeted at the specific failures in the feedback.
+- When you change a file, output its COMPLETE new content (no diffs/ellipses).
 
-Output as a JSON array:
-[{{"path": "...", "content": "..."}}, ...]
+LAYOUT DISCIPLINE (critical):
+- Use EXACTLY the directory layout from the plan. Never invent new top-level
+  directories, and never create a second copy of a package at a different
+  root (e.g. both `driftvault/` and `src/driftvault/`) — stale duplicates
+  shadow imports and break every test.
+- If stale/duplicate files from earlier iterations exist (see Previous
+  Implementation), list them in "delete" to remove them.
+
+Output a single pure JSON object with a "files" array containing ONLY the
+changed or added files, and an optional "delete" array of stale paths to
+remove:
+{{"files": [{{"path": "...", "content": "..."}}, ...], "delete": ["stale/path.py", ...]}}
 """
+
+        # Inject "Rules & Lessons Learned" just before the task instructions,
+        # OUTSIDE the <compress> block (normative; capped by the ledger upstream).
+        if rules:
+            rules_block = f"\n# Rules & Lessons Learned (must follow)\n\n{rules}\n"
+            user_message = user_message.replace(
+                "\n# Your Task\n", rules_block + "\n# Your Task\n", 1
+            )
 
         return [
             {"role": "system", "content": self.system_prompt},
@@ -447,13 +473,20 @@ Output as a JSON array:
         Raises:
             ValueError: If output is not valid JSON
         """
+        # Stash rules for _build_messages (single & chunked paths build contexts
+        # separately); pop so it never leaks into the provider kwargs.
+        self._active_rules = kwargs.pop('rules', None)
+
         # Calculate budget to decide if chunking is needed
         budget = self._context_manager.calculate_budget(
             self.provider.config, self.system_prompt, self.default_max_tokens
         )
         planned_files = self._extract_planned_files(plan)
 
-        if not planned_files or not self._needs_chunking(planned_files, budget):
+        # Refinement iterations are incremental (only changed files) — always a
+        # single request. Chunking would regenerate the full tree and reintroduce
+        # regression risk; it exists for the big iteration-1 build-out only.
+        if iteration > 1 or not planned_files or not self._needs_chunking(planned_files, budget):
             # Single-request path (normal case)
             files = self._generate_single(
                 plan, iteration, feedback, previous_code, output_dir, **kwargs
@@ -511,10 +544,84 @@ Output as a JSON array:
 
             files = all_files
 
+        # Apply requested deletions of stale files (path-contained, files only,
+        # then empty parent dirs bottom-up — per the no-force-deletion policy).
+        pending = getattr(self, '_pending_deletes', None)
+        self._pending_deletes = None
+        if pending and output_dir:
+            self._apply_deletes(pending, output_dir)
+
+        # Completeness gate: one bounded, targeted pass when the generated set is
+        # missing critical files (dependency manifest, tests, or planned files).
+        # Models frequently truncate/omit on large plans; a small "generate ONLY
+        # these" request is far more reliable than hoping the next full iteration
+        # fixes it — and cheaper than burning a verify cycle on incomplete code.
+        try:
+            files = self._ensure_critical_files(plan, files, iteration, feedback,
+                                                existing=previous_code, **kwargs)
+        except Exception as e:
+            logger.warning(f"Completeness pass failed (continuing with generated set): {e}")
+
         # Write files if output_dir provided
         if output_dir:
             self._write_files(files, output_dir)
 
+        return files
+
+    # Dependency-manifest filenames per supported runtime
+    _MANIFEST_NAMES = ("requirements.txt", "pyproject.toml", "package.json",
+                       "go.mod", "Cargo.toml", "pom.xml")
+
+    @staticmethod
+    def _is_test_path(path: str) -> bool:
+        p = path.lower()
+        name = p.rsplit("/", 1)[-1]
+        return (p.startswith("tests/") or "/tests/" in p or "/test/" in p
+                or name.startswith("test_") or name.endswith("_test.py")
+                or ".test." in name or ".spec." in name)
+
+    def _ensure_critical_files(self, plan: str, files: Dict[str, str],
+                               iteration: int, feedback: Optional[str],
+                               existing: Optional[Dict[str, str]] = None,
+                               **kwargs) -> Dict[str, str]:
+        """One bounded completion request for critical/planned files that are
+        missing from the generated set. Never overwrites files already produced.
+
+        `existing` = files already in staging from prior iterations; refinement
+        outputs are incremental, so completeness is judged on the union.
+        """
+        if not files:
+            return files
+
+        effective = set(files) | set(existing or {})
+        planned = self._extract_planned_files(plan) or []
+        missing_planned = [p for p in planned if p not in effective]
+        has_manifest = any(f.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for f in effective)
+        has_tests = any(self._is_test_path(f) for f in effective)
+
+        if has_manifest and has_tests and not missing_planned:
+            return files  # complete — no extra call
+
+        targets = list(missing_planned[:15])  # bounded
+        if not has_manifest and not any(t.rsplit("/", 1)[-1] in self._MANIFEST_NAMES for t in targets):
+            targets.append("the project's dependency manifest (e.g. requirements.txt or pyproject.toml)")
+        if not has_tests and not any(self._is_test_path(t) for t in targets if "/" in t or t.endswith(".py")):
+            targets.append("a tests/ suite that actually exercises the generated code")
+        if not targets:
+            return files
+
+        logger.info(
+            f"Completeness gate: {len(files)} files generated, requesting "
+            f"{len(targets)} missing item(s): {targets[:5]}{'...' if len(targets) > 5 else ''}"
+        )
+        extra = self._generate_chunk(
+            plan, iteration, feedback, files,   # previous_code=what exists already
+            targets, 1, 1, None, **kwargs,
+        )
+        added = {p: c for p, c in (extra or {}).items() if p not in files}
+        if added:
+            logger.info(f"Completeness gate added {len(added)} file(s): {sorted(added)[:8]}")
+            files = {**files, **added}
         return files
 
     def _parse_files_json(self, response: str) -> Dict[str, str]:
@@ -547,10 +654,12 @@ Output as a JSON array:
                 response = response[first_newline + 1:].strip()
 
         # Strategy 1: Try parsing as-is
+        # (ValueError included: a parsed-but-wrong shape should still fall through
+        # to the regex strategy rather than aborting the whole parse.)
         try:
             files_array = json.loads(response)
             return self._convert_to_file_dict(files_array)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
         # Strategy 2: Fix common issues with Python docstrings in JSON
@@ -561,7 +670,7 @@ Output as a JSON array:
             fixed = response.replace('\\"\\"\\"', '\\\\"\\\\"\\\\"')  # """ -> \"\"\"
             files_array = json.loads(fixed)
             return self._convert_to_file_dict(files_array)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
         # Strategy 3: Parse file-by-file using regex
@@ -573,6 +682,22 @@ Output as a JSON array:
 
     def _convert_to_file_dict(self, files_array: Any) -> Dict[str, str]:
         """Convert parsed JSON array to file dictionary."""
+        # response_format=json_object forces an OBJECT — models then wrap the
+        # array, e.g. {"files": [...]}. Unwrap before validating. An optional
+        # "delete" list (stale paths to remove) is stashed for generate_code.
+        if isinstance(files_array, dict):
+            dels = files_array.get("delete")
+            if isinstance(dels, list):
+                self._pending_deletes = [d for d in dels if isinstance(d, str)]
+            for key in ("files", "Files", "FILES"):
+                if isinstance(files_array.get(key), list):
+                    files_array = files_array[key]
+                    break
+            else:
+                lists = [v for v in files_array.values() if isinstance(v, list)]
+                if len(lists) == 1:
+                    files_array = lists[0]
+
         if not isinstance(files_array, list):
             raise ValueError("Expected JSON array of files")
 
@@ -676,6 +801,42 @@ Output as a JSON array:
             prefix, len(stripped),
         )
         return stripped
+
+    def _apply_deletes(self, paths: List[str], output_dir: Path) -> None:
+        """Safely remove engineer-requested stale paths from staging.
+
+        Policy-compliant deletion: every path is resolved and validated inside
+        output_dir; symlinks are never followed; files are unlinked one by one
+        and emptied directories removed bottom-up with rmdir. Anything that
+        fails is logged and skipped — never escalated.
+        """
+        root = output_dir.resolve()
+        deleted = 0
+        for rel in paths[:50]:  # bounded
+            target = (output_dir / rel.strip().lstrip("/")).resolve()
+            if not str(target).startswith(str(root) + "/"):
+                logger.warning("Delete request outside staging ignored: %r", rel)
+                continue
+            try:
+                if target.is_symlink() or target.is_file():
+                    target.unlink(missing_ok=True)
+                    deleted += 1
+                elif target.is_dir():
+                    for f in sorted(target.rglob("*"), reverse=True):
+                        try:
+                            if f.is_symlink() or f.is_file():
+                                f.unlink(missing_ok=True)
+                                deleted += 1
+                            elif f.is_dir():
+                                f.rmdir()
+                        except OSError as e:
+                            logger.warning("Skip undeletable %s: %s", f, e)
+                    target.rmdir()
+            except OSError as e:
+                logger.warning("Skip undeletable %s: %s", target, e)
+        if deleted:
+            logger.info("Engineer deletions applied: %d file(s) from %d request(s)",
+                        deleted, len(paths))
 
     def _write_files(self, files: Dict[str, str], output_dir: Path) -> None:
         """Write files to disk.

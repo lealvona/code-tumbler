@@ -7,12 +7,14 @@ This package contains the three core agents:
 """
 
 from .base_agent import BaseAgent
+from .specifier import SpecifierAgent
 from .architect import ArchitectAgent
 from .engineer import EngineerAgent
 from .verifier import VerifierAgent
 
 __all__ = [
     "BaseAgent",
+    "SpecifierAgent",
     "ArchitectAgent",
     "EngineerAgent",
     "VerifierAgent",

@@ -1,14 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
+import { useStore } from "@/lib/store";
 import type { ProjectStatus } from "@/lib/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PhaseIndicator } from "@/features/projects/phase-indicator";
+import { SpecConsole } from "@/features/projects/spec-console";
+import { ProjectRules } from "@/features/projects/project-rules";
 import { ArtifactBrowser } from "@/features/projects/artifact-browser";
 import { ProjectProviderConfig } from "@/features/projects/project-providers";
 import { AgentConversation } from "@/features/projects/agent-conversation";
@@ -30,6 +34,7 @@ import { useToast } from "@/hooks/use-toast";
 export default function ProjectDetailPage() {
   const params = useParams();
   const name = params.name as string;
+  const events = useStore((s) => s.events);
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [starting, setStarting] = useState(false);
   const [usage, setUsage] = useState<UsageData | null>(null);
@@ -41,21 +46,22 @@ export default function ProjectDetailPage() {
   const router = useRouter();
   const { toast } = useToast();
 
-  function refresh() {
-    api.getProjectStatus(name).then(setStatus).catch(console.error);
-  }
+  const refresh = useCallback(() => {
+    api.getProjectStatus(name).then(setStatus).catch(() => {});
+  }, [name]);
 
+  // One-time config/providers (these don't change during a session).
   useEffect(() => {
-    refresh();
-    api.getUsage(name).then(setUsage).catch(() => {});
     api.getConfig().then(setConfig).catch(() => {});
     api.listProviders().then(setAllProviders).catch(() => {});
-    const interval = setInterval(() => {
-      refresh();
-      api.getUsage(name).then(setUsage).catch(() => {});
-    }, 5000);
-    return () => clearInterval(interval);
+  }, []);
+
+  // Recurring status + usage — paused while the tab is hidden.
+  const pollTick = useCallback(() => {
+    api.getProjectStatus(name).then(setStatus).catch(() => {});
+    api.getUsage(name).then(setUsage).catch(() => {});
   }, [name]);
+  usePolling(pollTick, 5000);
 
   async function handleStart() {
     setStarting(true);
@@ -144,9 +150,29 @@ export default function ProjectDetailPage() {
             <span className="text-sm text-muted-foreground">
               Iteration {status.iteration} / {status.max_iterations}
             </span>
+            {/* Running score — prominent, color-coded against the threshold */}
             {status.last_score !== null && (
-              <span className="text-sm text-muted-foreground">
-                Score: {status.last_score}/10
+              <span className="inline-flex items-baseline gap-1.5 rounded-md border px-2.5 py-0.5 bg-card">
+                <span
+                  className={`text-xl font-bold leading-none tabular-nums ${
+                    status.last_score >= status.quality_threshold
+                      ? "text-green-600 dark:text-green-400"
+                      : status.last_score >= 50
+                        ? "text-yellow-600 dark:text-yellow-400"
+                        : "text-red-600 dark:text-red-400"
+                  }`}
+                >
+                  {status.last_score}
+                </span>
+                <span className="text-[10px] text-muted-foreground leading-none">
+                  /100 · target {status.quality_threshold}
+                </span>
+                {status.best_score != null &&
+                  status.best_score > (status.last_score ?? 0) && (
+                    <span className="text-[10px] text-muted-foreground leading-none">
+                      · best {status.best_score}
+                    </span>
+                  )}
               </span>
             )}
           </div>
@@ -215,9 +241,30 @@ export default function ProjectDetailPage() {
         </Card>
       )}
 
+      {/* Sandbox outage banner: scores are LLM-only until the sandbox returns */}
+      {status.is_running &&
+        events.some(
+          (e) =>
+            e.type === "sandbox_unavailable" && e.data?.project === name
+        ) && (
+          <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950/30">
+            <CardContent className="pt-4 flex items-start gap-2">
+              <span className="text-base leading-none">⚠️</span>
+              <p className="text-sm text-amber-800 dark:text-amber-200">
+                <strong>Sandbox unavailable</strong> — verification fell back to
+                LLM-only code review. Scores are not grounded in real build/test
+                results until Docker is reachable again (auto-recovery will
+                retry on the next iteration).
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
       <Tabs defaultValue="conversation">
         <TabsList>
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
+          <TabsTrigger value="spec">Spec</TabsTrigger>
+          <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
@@ -230,6 +277,14 @@ export default function ProjectDetailPage() {
             isRunning={status.is_running}
             key={resetKey}
           />
+        </TabsContent>
+
+        <TabsContent value="spec" className="mt-4">
+          <SpecConsole projectName={name} isRunning={status.is_running} />
+        </TabsContent>
+
+        <TabsContent value="rules" className="mt-4">
+          <ProjectRules projectName={name} />
         </TabsContent>
 
         <TabsContent value="status" className="mt-4">
@@ -246,11 +301,11 @@ export default function ProjectDetailPage() {
                   {status.iteration} / {status.max_iterations}
                 </span>
                 <span className="text-muted-foreground">Quality Threshold</span>
-                <span>{status.quality_threshold}/10</span>
+                <span>{status.quality_threshold}/100</span>
                 <span className="text-muted-foreground">Last Score</span>
                 <span>
                   {status.last_score !== null
-                    ? `${status.last_score}/10`
+                    ? `${status.last_score}/100`
                     : "N/A"}
                 </span>
                 <span className="text-muted-foreground">Started</span>

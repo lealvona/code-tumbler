@@ -1,21 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
+import { usePolling } from "@/hooks/use-polling";
 import type { GlobalStats } from "@/lib/types";
 import { Database, DollarSign, Hash } from "lucide-react";
 
 export function GlobalStatsPanel() {
   const [stats, setStats] = useState<GlobalStats | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.getGlobalStats().then(setStats).catch(() => {});
-    const interval = setInterval(() => {
-      api.getGlobalStats().then(setStats).catch(() => {});
-    }, 30000);
-    return () => clearInterval(interval);
   }, []);
+  usePolling(load, 30000); // paused when the tab is hidden
 
   if (!stats) return null;
 
