@@ -67,7 +67,8 @@ _PY_INSTALL_CMD = (
     # should fail install visibly). 3. Dev-requirements variants (tolerant).
     # 4. The package itself with dev extras (src-layout projects put test deps
     # like moto in [dev]); fall back to bare package, then continue regardless.
-    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest flake8 && "
+    f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest pytest-cov flake8 && "
+    f"printf '[run]\\nomit =\\n    {_PY_DEPS}/*\\n    tests/*\\n    test/*\\n    setup.py\\n' > .coveragerc-sandbox && "
     f"if [ -f requirements.txt ]; then "
     f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt; "
     f"fi && "
@@ -89,12 +90,33 @@ _PY_TEST_CMD = (
     # signal the feedback loop needs to converge.
     f'python -m pytest "$([ -d tests ] && echo tests || echo .)" '
     f'--tb=short --continue-on-collection-errors --ignore={_PY_DEPS} '
+    f'--cov=. --cov-config=.coveragerc-sandbox --cov-report=term '
     f'-p no:cacheprovider 2>&1 || true'
 )
 _PY_LINT_CMD = (
-    f'python -m flake8 . --count --select=E9,F63,F7,F82 '
-    f'--show-source --statistics '
-    f'--exclude .venv,venv,node_modules,dist,build,__pycache__,.git,{_PY_DEPS} 2>&1 || true'
+    # Full lint profile (the old --select=E9,F63,F7,F82 screened only critical
+    # errors, making the lint score nearly free). Black-compatible ignores.
+    f'python -m flake8 . --count --max-line-length=120 '
+    f'--extend-ignore=E501,W503,W504,E203,E731 '
+    f'--exclude .venv,venv,node_modules,dist,build,__pycache__,.git,{_PY_DEPS},.coveragerc-sandbox 2>&1 || true'
+)
+
+# Runtime smoke: import every top-level package. Programs that crash on import
+# scored zero deductions before this — "does it even load" is now worth points.
+_PY_SMOKE_CMD = (
+    'python -c "'
+    "import os, importlib; "
+    "base = 'src' if os.path.isdir('src') else '.'; "
+    "pkgs = [d for d in os.listdir(base) "
+    "if os.path.isdir(os.path.join(base, d)) "
+    "and os.path.exists(os.path.join(base, d, '__init__.py')) "
+    "and d not in ('tests', 'test', '.sandbox_deps')]; "
+    "mods = [f[:-3] for f in os.listdir(base) if f.endswith('.py') "
+    "and not f.startswith('test') and f not in ('setup.py', 'conftest.py')] if not pkgs else []; "
+    "targets = pkgs or mods; "
+    "print('SMOKE SKIP: nothing importable') if not targets else "
+    "([importlib.import_module(t) for t in targets], print('SMOKE OK:', ', '.join(targets)))"
+    '"'
 )
 
 # Mapping of file markers to runtime info
@@ -814,6 +836,7 @@ class SandboxExecutor:
             passed, total = self._parse_test_counts(r.stdout + r.stderr)
             results.tests_passed = passed
             results.tests_total = total
+            results.coverage_percent = self._parse_coverage(r.stdout + r.stderr)
             if r.timed_out:
                 results.errors.append(f"Tests timed out after {self.config.timeout_test}s")
         self._notify_phase(on_phase_complete, "test", test_results, test_cmds)
@@ -823,6 +846,27 @@ class SandboxExecutor:
             results.lint_output = r.stdout + ("\n" + r.stderr if r.stderr else "")
             results.lint_issues = self._count_lint_issues(r.stdout + r.stderr)
         self._notify_phase(on_phase_complete, "lint", lint_results, lint_cmds)
+
+        # --- Phase 4b: Runtime smoke (import the package; no network) ---
+        if runtime.language == "python":
+            smoke_results = self._run_container(
+                image=runtime.image,
+                commands=[_PY_SMOKE_CMD],
+                workspace_path=workspace,
+                timeout=60,
+                network_mode="none",
+                label="smoke",
+                env_exports=env_exports,
+            )
+            if smoke_results:
+                r = smoke_results[0]
+                results.smoke_success = (r.exit_code == 0 and not r.timed_out)
+                results.runtime_output = (r.stdout + ("\n" + r.stderr if r.stderr else ""))[:5000]
+                if not results.smoke_success:
+                    results.errors.append("Runtime smoke failed: package does not import cleanly")
+            self._notify_phase(on_phase_complete, "smoke", smoke_results, [_PY_SMOKE_CMD])
+        else:
+            results.smoke_success = None  # N/A — scoring falls back to build success
 
         # --- Phase 5: E2E Tests (web apps only) ---
         if (runtime.is_web_app
@@ -850,6 +894,14 @@ class SandboxExecutor:
             self._notify_phase(on_phase_complete, "e2e", e2e_results, e2e_test_commands)
 
         return results
+
+    @staticmethod
+    def _parse_coverage(output: str) -> Optional[float]:
+        """Extract total coverage %% from a pytest-cov term report (None if absent)."""
+        m = re.search(r"^TOTAL\s+\d+\s+\d+(?:\s+\d+\s+\d+)?\s+(\d+(?:\.\d+)?)%", output, re.MULTILINE)
+        if m:
+            return float(m.group(1))
+        return None
 
     @staticmethod
     def _parse_test_counts(output: str) -> Tuple[int, int]:

@@ -30,6 +30,8 @@ class VerificationResult:
         self.errors: List[str] = []
         self.score: float = 0.0
         self.code_review_only: bool = False
+        self.coverage_percent: Optional[float] = None
+        self.smoke_success: Optional[bool] = None
         # Active Specification Alignment fields
         self.e2e_tests_passed: int = 0
         self.e2e_tests_total: int = 0
@@ -52,6 +54,8 @@ class VerificationResult:
             'errors': self.errors,
             'score': self.score,
             'code_review_only': self.code_review_only,
+            'coverage_percent': self.coverage_percent,
+            'smoke_success': self.smoke_success,
             'e2e_tests_passed': self.e2e_tests_passed,
             'e2e_tests_total': self.e2e_tests_total,
             'e2e_output': self.e2e_output,
@@ -365,35 +369,38 @@ Be objective, specific, and constructive.
         # Generate report using LLM
         report = self.execute(context, **kwargs)
 
-        # Extract final score from report (LLM might adjust it)
-        llm_score = self._extract_score_from_report(report)
-        if llm_score is not None:
-            final_score = llm_score
-            # Anti-jitter: when real sandbox metrics exist, the LLM's judged
-            # score may only deviate ±15 from the deterministic automated score.
-            # Identical code quality was oscillating ±20 across iterations on
-            # judged components alone, stalling convergence.
-            if (results.score is not None and not results.code_review_only
-                    and results.tests_total > 0):
-                lo = max(0.0, results.score - 15.0)
-                hi = min(100.0, results.score + 15.0)
-                clamped = min(max(final_score, lo), hi)
-                if clamped != final_score:
-                    logger.info(
-                        f"LLM score {final_score} clamped to {clamped} "
-                        f"(automated baseline {results.score} ± 15)"
-                    )
-                    final_score = clamped
-        elif results.score is not None:
-            final_score = results.score
+        # ── Evidence-weighted scorecard ──────────────────────────────────
+        # Final = deterministic core (0-70, machine facts) + judged rubric
+        # (0-30, LLM checklist booleans). The LLM never emits the number.
+        checklist = self._parse_checklist(report)
+        judged, judged_detail = self._judged_points(checklist, results)
+
+        if results.score is not None:
+            core = results.score
+            final_score = round(min(100.0, core + judged), 1)
         else:
-            # No automated verification ran AND LLM didn't produce a score
-            # (e.g. truncated response). Default to 50 = "needs human review"
-            # rather than a low score which forces wasteful re-iterations.
-            final_score = 50.0
-            logger.warning(
-                "No score from verification or LLM report — defaulting to 50/100"
-            )
+            # code-review-only (sandbox absent): no deterministic core exists.
+            # Use the LLM's narrative score, informational only — recognition
+            # gating upstream prevents completion on such scores anyway.
+            llm_score = self._extract_score_from_report(report)
+            core = None
+            final_score = llm_score if llm_score is not None else 50.0
+
+        # Transparency: append the authoritative breakdown to the report (it is
+        # saved, shown in the UI, and becomes the engineer's next feedback).
+        cov = (f"{results.coverage_percent:.0f}%"
+               if results.coverage_percent is not None else "n/a")
+        smoke = ("PASS" if results.smoke_success
+                 else "N/A" if results.smoke_success is None else "FAIL")
+        report += (
+            "\n\n---\n## Evidence Scorecard (authoritative)\n\n"
+            f"- Deterministic core: **{core if core is not None else 'n/a'}/70** "
+            f"(tests {results.tests_passed}/{results.tests_total}, "
+            f"coverage {cov}, build {'OK' if results.build_success else 'FAIL'}, "
+            f"lint issues {results.lint_issues}, smoke {smoke})\n"
+            f"- Judged rubric: **{judged}/30** — {judged_detail}\n"
+            f"- **FINAL: {final_score}/100**\n"
+        )
 
         # Stash the structured result so the orchestrator's plateau detector can
         # compare real progress metrics (tests passed, files) — not just the score.
@@ -591,18 +598,15 @@ Be objective, specific, and constructive.
         return issues
 
     def _calculate_score(self, results: VerificationResult) -> Optional[float]:
-        """Calculate preliminary quality score (0-100) from verification results.
+        """Deterministic core of the evidence-weighted scorecard (0-70).
 
-        The 0-100 scale gives the feedback loop finer granularity than the old
-        0-10 integers, so incremental progress (e.g. 3 -> 5 passing tests) moves
-        the score instead of stalling the plateau detector.
-
-        Components:
-          - Non-web: Build(30) + Tests(40, needs tests to exist) + Lint(20) + NoErrors(10)
-          - Web:     Build(20) + Tests(20) + Lint(10) + NoErrors(10) + E2E(20) + Rubric(20)
-
-        A project with ZERO collected tests earns 0 of the test points — "no
-        tests" must never score like "tests pass".
+        Every point traces to a machine-verified fact:
+          Non-web: tests 25 + coverage 15 + build 10 + lint 10 + smoke 10 = 70
+          Web:     tests 15 + coverage 10 + build 10 + lint 10 + smoke 5 + E2E 20 = 70
+        Coverage unavailable -> its points fold into the test component.
+        Smoke N/A (non-Python) -> follows build success.
+        ZERO collected tests always earns zero test points.
+        The judged rubric (0-30) is added in verify() from the LLM checklist.
 
         Returns None when no verification commands ran (code_review_only).
         """
@@ -610,41 +614,44 @@ Be objective, specific, and constructive.
             return None  # defer to LLM code review
 
         def lint_points(full: float) -> float:
-            if results.lint_issues == 0:
+            # Full-profile lint now; step by issue count.
+            n = results.lint_issues
+            if n == 0:
                 return full
-            if results.lint_issues < 5:
+            if n <= 5:
+                return full * 0.8
+            if n <= 20:
                 return full * 0.5
+            if n <= 50:
+                return full * 0.2
             return 0.0
 
-        # Web app scoring (has E2E results)
-        if results.e2e_tests_total > 0:
-            score = 0.0
-            if results.build_success:
-                score += 20.0
-            if results.tests_total > 0:
-                score += (results.tests_passed / results.tests_total) * 20.0
-            score += lint_points(10.0)
-            if not results.errors:
-                score += 10.0
-            score += (results.e2e_tests_passed / results.e2e_tests_total) * 20.0
-            if results.rubric_items_total > 0:
-                score += (results.rubric_items_verified / results.rubric_items_total) * 20.0
-            return min(100.0, round(score, 1))
+        def test_points(base: float, cov_pts: float) -> float:
+            ratio = (results.tests_passed / results.tests_total) if results.tests_total > 0 else 0.0
+            if results.coverage_percent is None:
+                return (base + cov_pts) * ratio  # coverage folds into tests
+            return base * ratio + cov_pts * (min(100.0, results.coverage_percent) / 100.0)
 
-        # Standard scoring for non-web apps
-        score = 0.0
+        def smoke_points(full: float) -> float:
+            if results.smoke_success is None:  # N/A — follow build
+                return full if results.build_success else 0.0
+            return full if results.smoke_success else 0.0
+
+        if results.e2e_tests_total > 0:  # web app
+            score = test_points(15.0, 10.0)
+            if results.build_success:
+                score += 10.0
+            score += lint_points(10.0)
+            score += smoke_points(5.0)
+            score += (results.e2e_tests_passed / results.e2e_tests_total) * 20.0
+            return min(70.0, round(score, 1))
+
+        score = test_points(25.0, 15.0)
         if results.build_success:
-            score += 30.0
-        if results.tests_total > 0:
-            score += (results.tests_passed / results.tests_total) * 40.0
-        score += lint_points(20.0)
-        if not results.errors:
             score += 10.0
-        # Rubric bonus for non-web apps (up to 5 bonus points)
-        if results.rubric_items_total > 0:
-            rubric_rate = results.rubric_items_verified / results.rubric_items_total
-            score += rubric_rate * 5.0
-        return min(100.0, round(score, 1))
+        score += lint_points(10.0)
+        score += smoke_points(10.0)
+        return min(70.0, round(score, 1))
 
     def _get_code_summary(self, project_path: Path) -> Dict[str, str]:
         """Get generated file contents for verification.
@@ -687,6 +694,57 @@ Be objective, specific, and constructive.
                     summary[rel_path] = "[Binary or unreadable file]"
 
         return summary
+
+    @staticmethod
+    def _parse_checklist(report: str) -> Optional[Dict[str, Any]]:
+        """Extract the LAST fenced JSON checklist from the LLM report."""
+        blocks = re.findall(r"```json\s*\n(.*?)```", report, re.DOTALL)
+        for block in reversed(blocks):
+            try:
+                data = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and ("rubric_items" in data or "quality" in data):
+                return data
+        return None
+
+    def _judged_points(self, checklist: Optional[Dict[str, Any]],
+                       results: VerificationResult) -> tuple:
+        """Judged rubric points (0-30) from the boolean checklist.
+
+        Completeness 15 (honesty floor: <5 rubric items caps it at 8; no rubric
+        at all earns a flat 4) + quality 4x2.5 + test meaningfulness 2x2.5.
+        Fallback when the checklist is unparseable: mechanical rubric ratio only.
+        """
+        if checklist is None:
+            logger.warning("No scorecard checklist in verifier report — "
+                           "falling back to mechanical rubric grading only")
+            if results.rubric_items_total > 0:
+                mech = 15.0 * results.rubric_items_verified / results.rubric_items_total
+                if results.rubric_items_total < 5:
+                    mech = min(mech, 8.0)
+                return round(mech, 1), "checklist missing; mechanical rubric only"
+            return 4.0, "checklist missing; no rubric"
+
+        items = checklist.get("rubric_items") or []
+        total = len(items)
+        passed = sum(1 for it in items if isinstance(it, dict) and it.get("pass") is True)
+        if total == 0:
+            completeness = 4.0
+        else:
+            completeness = 15.0 * passed / total
+            if total < 5:
+                completeness = min(completeness, 8.0)
+
+        q = checklist.get("quality") or {}
+        quality = 2.5 * sum(1 for k in ("idiomatic", "error_handling", "no_dead_code", "docs")
+                            if q.get(k) is True)
+        t = checklist.get("test_meaningfulness") or {}
+        meaning = 2.5 * sum(1 for k in ("real_behavior", "failure_paths") if t.get(k) is True)
+
+        detail = (f"completeness {round(completeness,1)}/15 ({passed}/{total} items), "
+                  f"quality {quality}/10, tests {meaning}/5")
+        return round(completeness + quality + meaning, 1), detail
 
     def _extract_score_from_report(self, report: str) -> Optional[float]:
         """Extract quality score from report.
