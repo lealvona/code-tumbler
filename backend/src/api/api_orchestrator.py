@@ -768,6 +768,18 @@ class APIOrchestrator(Orchestrator):
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
                 self._snapshot_best(project_path, state_mgr, score)
+                if self._revert_to_best(project_path, state_mgr, score):
+                    state_mgr.log_conversation(
+                        agent="system", role="status", iteration=iteration,
+                        content=(
+                            f"Iteration {iteration} regressed ({score}/100) well below the "
+                            f"best iteration — its changes were rejected and the code was "
+                            f"restored to the best-scoring state. The next iteration will "
+                            f"improve the best code instead."
+                        ),
+                        metadata={"label": "Reverted to Best"},
+                    )
+                    self._publish_conversation_update(project_path, "system")
                 vres = getattr(self.verifier, "last_result", None)
                 staging = project_path / "03_staging"
                 skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv'}
