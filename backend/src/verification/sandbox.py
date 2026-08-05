@@ -68,6 +68,9 @@ _PY_INSTALL_CMD = (
     # 4. The package itself with dev extras (src-layout projects put test deps
     # like moto in [dev]); fall back to bare package, then continue regardless.
     f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} pytest pytest-cov flake8 && "
+    # rm -f first: a stale round-tripped copy may be unwritable to the
+    # capability-stripped root user, but unlink only needs directory write.
+    f"rm -f .coveragerc-sandbox && "
     f"printf '[run]\\nomit =\\n    {_PY_DEPS}/*\\n    tests/*\\n    test/*\\n    setup.py\\n' > .coveragerc-sandbox && "
     f"if [ -f requirements.txt ]; then "
     f"pip install --no-cache-dir --upgrade --target={_PY_DEPS} -r requirements.txt; "
@@ -357,12 +360,29 @@ class SandboxExecutor:
             logger.info(f"Image {image} pulled successfully")
 
     @staticmethod
+    def _tar_root_owner(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+        """Normalize tar member ownership to root (uid/gid 0).
+
+        The sandbox runs as root with ALL capabilities dropped — including
+        CAP_DAC_OVERRIDE, so root there CANNOT bypass file permissions. Files
+        archived with the host user's uid (e.g. a round-tripped
+        .coveragerc-sandbox or .sandbox_deps) would be unwritable inside the
+        container, silently killing the install command chain.
+        """
+        ti.uid = 0
+        ti.gid = 0
+        ti.uname = "root"
+        ti.gname = "root"
+        return ti
+
+    @staticmethod
     def _make_tar(source_dir: str) -> bytes:
         """Create an in-memory tar archive of a directory's contents.
 
         Files are added relative to the source directory root so that
         extracting the archive into /workspace recreates the project
-        structure.
+        structure. Ownership is normalized to root so the capability-stripped
+        container user can modify every file it receives.
 
         Security: symlinks are skipped entirely — a generated project
         should never contain symlinks, and including them could allow
@@ -395,7 +415,8 @@ class SandboxExecutor:
                         continue
 
                     arcname = os.path.relpath(full, source_dir)
-                    tar.add(full, arcname=arcname)
+                    tar.add(full, arcname=arcname,
+                            filter=SandboxExecutor._tar_root_owner)
 
         if skipped:
             logger.info(f"Tar archive: skipped {skipped} symlinks/out-of-scope files")

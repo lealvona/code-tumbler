@@ -86,6 +86,7 @@ class EngineerAgent(BaseAgent):
         # rules may come via context or be stashed on the instance by generate_code
         # (the single vs chunked paths build contexts separately).
         rules = context.get('rules') or getattr(self, '_active_rules', None)
+        rubric = context.get('rubric') or getattr(self, '_active_rubric', None)
 
         # Build the chunk-specific task instruction suffix
         if chunk_info:
@@ -211,6 +212,21 @@ changed or added files, and an optional "delete" array of stale paths to
 remove:
 {{"files": [{{"path": "...", "content": "..."}}, ...], "delete": ["stale/path.py", ...]}}
 """
+
+        # Inject the spec-derived rubric just before the task instructions,
+        # OUTSIDE the <compress> block — the verifier grades against EXACTLY
+        # these items, so spec-mandated details (env var names, behaviors)
+        # must reach the engineer verbatim, not via the plan's paraphrase.
+        if rubric:
+            rubric_block = (
+                "\n# Specification Rubric (your code is graded against EXACTLY these items)\n\n"
+                "Every item below comes from the normative spec. Use the exact "
+                "names, env vars, file paths, and behaviors stated here.\n\n"
+                f"```yaml\n{rubric}\n```\n"
+            )
+            user_message = user_message.replace(
+                "\n# Your Task\n", rubric_block + "\n# Your Task\n", 1
+            )
 
         # Inject "Rules & Lessons Learned" just before the task instructions,
         # OUTSIDE the <compress> block (normative; capped by the ledger upstream).
@@ -473,9 +489,10 @@ remove:
         Raises:
             ValueError: If output is not valid JSON
         """
-        # Stash rules for _build_messages (single & chunked paths build contexts
-        # separately); pop so it never leaks into the provider kwargs.
+        # Stash rules/rubric for _build_messages (single & chunked paths build
+        # contexts separately); pop so they never leak into provider kwargs.
         self._active_rules = kwargs.pop('rules', None)
+        self._active_rubric = kwargs.pop('rubric', None)
 
         # Calculate budget to decide if chunking is needed
         budget = self._context_manager.calculate_budget(
