@@ -453,6 +453,7 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
         sm.set_provider_overrides(body.provider_overrides)
 
     def run_tumble():
+        orch = None
         try:
             sm = StateManager(project_dir)
             overrides = sm.get_provider_overrides()
@@ -510,7 +511,12 @@ async def start_project(name: str, request: Request, body: Optional[StartProject
                 "error": str(e),
             })
         finally:
-            request.app.state.active_orchestrators.pop(name, None)
+            # Only deregister OUR orchestrator. A stop() -> start() sequence can
+            # register a new run before the old thread's finally executes; an
+            # unconditional pop would deregister the NEW run, making it invisible
+            # to is_running/stop and allowing a concurrent duplicate start.
+            if request.app.state.active_orchestrators.get(name) is orch:
+                request.app.state.active_orchestrators.pop(name, None)
 
     thread = threading.Thread(target=run_tumble, daemon=True)
     thread.start()
