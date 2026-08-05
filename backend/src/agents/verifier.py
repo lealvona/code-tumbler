@@ -511,16 +511,40 @@ Be objective, specific, and constructive.
 
         except ImportError:
             logger.info("Docker SDK not available — using code review only")
+            self._notify_sandbox_unavailable(on_phase_complete, "Docker SDK not installed")
             results = VerificationResult()
             results.code_review_only = True
             return results
 
         except Exception as e:
             logger.warning(f"Sandbox verification failed: {e}")
+            self._notify_sandbox_unavailable(on_phase_complete, str(e))
             results = VerificationResult()
             results.code_review_only = True
             results.errors.append(f"Sandbox failed: {e}")
             return results
+
+    @staticmethod
+    def _notify_sandbox_unavailable(on_phase_complete, reason: str) -> None:
+        """Loudly surface a sandbox outage to the orchestrator/UI.
+
+        Falling back to LLM-only review silently degrades scoring quality —
+        the operator must see it (SSE event + red conversation entry).
+        """
+        if on_phase_complete is None:
+            return
+        try:
+            on_phase_complete("sandbox_unavailable", {
+                "status": "unavailable",
+                "reason": reason[:500],
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "",
+                "duration_s": 0.0,
+                "commands": [],
+            })
+        except Exception:
+            logger.debug("sandbox_unavailable notification failed", exc_info=True)
 
     def _calculate_score(self, results: VerificationResult) -> Optional[float]:
         """Calculate preliminary quality score (0-100) from verification results.

@@ -457,6 +457,27 @@ class APIOrchestrator(Orchestrator):
 
         # Sandbox phase callback — publishes SSE events and persists to conversation
         def _on_sandbox_phase(phase_name: str, phase_data: dict):
+            # Sandbox outage: loud, dedicated signal — scores from this
+            # iteration are LLM-only and not grounded in real build/test runs.
+            if phase_name == "sandbox_unavailable":
+                reason = phase_data.get("reason", "unknown")
+                self.event_bus.publish("sandbox_unavailable", {
+                    "project": project_path.name,
+                    "iteration": iteration,
+                    "reason": reason,
+                })
+                state_mgr.log_conversation(
+                    agent="verifier", role="error", iteration=iteration,
+                    content=(
+                        "SANDBOX UNAVAILABLE — falling back to LLM-only code review. "
+                        "Scores this iteration are NOT grounded in real build/test "
+                        f"results. Reason: {reason}"
+                    ),
+                    metadata={"label": "Sandbox Unavailable"},
+                )
+                self._publish_conversation_update(project_path, "verifier")
+                return
+
             # Auto-detect known failure signatures into the rules ledger as
             # candidates (surfaced for review, NOT injected into prompts).
             try:

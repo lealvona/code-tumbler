@@ -158,6 +158,7 @@ export function useSSE() {
         "usage_update",
         "iteration_update",
         "spec_imported",
+        "sandbox_unavailable",
       ];
 
       for (const type of otherTypes) {

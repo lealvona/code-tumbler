@@ -273,12 +273,56 @@ class SandboxExecutor:
 
         # Connect via DOCKER_HOST env var (points to socket proxy)
         docker_host = os.environ.get("DOCKER_HOST")
-        if docker_host:
-            self.client = docker.DockerClient(base_url=docker_host)
-        else:
-            self.client = docker.from_env()
+        self.client = self._connect_with_recovery(docker_host)
 
         logger.info(f"SandboxExecutor initialized (docker_host={docker_host or 'local socket'})")
+
+    @staticmethod
+    def _connect_with_recovery(docker_host: Optional[str]):
+        """Connect to Docker; if the daemon is down, optionally revive it.
+
+        When DOCKER_RECOVERY_CMD is set (e.g. `systemctl --user start
+        docker-desktop` for a host-run backend using Docker Desktop), a failed
+        connection runs that command and polls up to 60s for the daemon to come
+        back before giving up. Without it, behavior is unchanged: the caller
+        falls back to code-review-only verification.
+        """
+        def _connect():
+            client = (docker.DockerClient(base_url=docker_host)
+                      if docker_host else docker.from_env())
+            client.ping()
+            return client
+
+        try:
+            return _connect()
+        except Exception as first_err:
+            recovery_cmd = os.environ.get("DOCKER_RECOVERY_CMD", "").strip()
+            if not recovery_cmd:
+                raise
+            logger.warning(
+                f"Docker daemon unreachable ({first_err}); attempting recovery "
+                f"via DOCKER_RECOVERY_CMD: {recovery_cmd}"
+            )
+            import shlex
+            import subprocess
+            try:
+                subprocess.run(
+                    shlex.split(recovery_cmd), timeout=30, check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except Exception as rec_err:
+                logger.warning(f"Docker recovery command failed to run: {rec_err}")
+                raise first_err
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                try:
+                    client = _connect()
+                    logger.info("Docker daemon recovered — sandbox available again")
+                    return client
+                except Exception:
+                    time.sleep(2)
+            logger.warning("Docker daemon did not come back within 60s")
+            raise first_err
 
     def _ensure_image(self, image: str) -> None:
         """Pull the base image if not already present."""

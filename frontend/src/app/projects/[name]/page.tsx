@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/use-polling";
+import { useStore } from "@/lib/store";
 import type { ProjectStatus } from "@/lib/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +34,7 @@ import { useToast } from "@/hooks/use-toast";
 export default function ProjectDetailPage() {
   const params = useParams();
   const name = params.name as string;
+  const events = useStore((s) => s.events);
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [starting, setStarting] = useState(false);
   const [usage, setUsage] = useState<UsageData | null>(null);
@@ -238,6 +240,25 @@ export default function ProjectDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Sandbox outage banner: scores are LLM-only until the sandbox returns */}
+      {status.is_running &&
+        events.some(
+          (e) =>
+            e.type === "sandbox_unavailable" && e.data?.project === name
+        ) && (
+          <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950/30">
+            <CardContent className="pt-4 flex items-start gap-2">
+              <span className="text-base leading-none">⚠️</span>
+              <p className="text-sm text-amber-800 dark:text-amber-200">
+                <strong>Sandbox unavailable</strong> — verification fell back to
+                LLM-only code review. Scores are not grounded in real build/test
+                results until Docker is reachable again (auto-recovery will
+                retry on the next iteration).
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
       <Tabs defaultValue="conversation">
         <TabsList>
