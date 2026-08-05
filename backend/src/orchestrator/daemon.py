@@ -977,7 +977,7 @@ class Orchestrator:
             self.logger.warning(f"Best-iteration snapshot failed: {e}")
 
     def _revert_to_best(self, project_path: Path, state_mgr: StateManager,
-                        score: float) -> bool:
+                        score: float, revert_count: int = 1) -> bool:
         """Hill-climb: when an iteration regresses well below the best, restore
         the best snapshot into staging so the NEXT iteration improves the best
         code instead of digging out of a hole. Returns True when reverted.
@@ -1013,8 +1013,21 @@ class Orchestrator:
             f"code has been restored to iteration {best_it}'s state.\n\n"
             f"Do NOT repeat the rejected approach. Improve the restored code by "
             f"fixing the remaining issues from the best iteration's report below.\n\n"
-            f"---\n\n"
         )
+        if revert_count >= 2:
+            note += (
+                f"## MINIMAL CHANGE MODE (attempt {revert_count} after "
+                f"{revert_count - 1} rejected refinements)\n\n"
+                f"Your previous broader changes keep regressing. This iteration you "
+                f"MUST:\n"
+                f"- Change AT MOST ONE file — the single file most directly "
+                f"implicated by the highest-priority failure below.\n"
+                f"- Make the smallest possible edit (a few lines). No refactoring, "
+                f"no renames, no new files, no deletions.\n"
+                f"- If a dependency version mismatch is implicated, prefer fixing "
+                f"the import/usage over changing pinned versions.\n\n"
+            )
+        note += "---\n\n"
         try:
             best_text = best_report.read_text(encoding='utf-8') if best_report.exists() else ""
             report_file.parent.mkdir(parents=True, exist_ok=True)

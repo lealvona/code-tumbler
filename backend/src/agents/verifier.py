@@ -32,6 +32,8 @@ class VerificationResult:
         self.code_review_only: bool = False
         self.coverage_percent: Optional[float] = None
         self.smoke_success: Optional[bool] = None
+        self.section_gates: Dict[str, Dict[str, Any]] = {}
+        self.gates_passed: bool = False
         # Active Specification Alignment fields
         self.e2e_tests_passed: int = 0
         self.e2e_tests_total: int = 0
@@ -56,6 +58,8 @@ class VerificationResult:
             'code_review_only': self.code_review_only,
             'coverage_percent': self.coverage_percent,
             'smoke_success': self.smoke_success,
+            'section_gates': self.section_gates,
+            'gates_passed': self.gates_passed,
             'e2e_tests_passed': self.e2e_tests_passed,
             'e2e_tests_total': self.e2e_tests_total,
             'e2e_output': self.e2e_output,
@@ -374,6 +378,8 @@ Be objective, specific, and constructive.
         # (0-30, LLM checklist booleans). The LLM never emits the number.
         checklist = self._parse_checklist(report)
         judged, judged_detail = self._judged_points(checklist, results)
+        if results.score is not None:
+            self._evaluate_section_gates(results, getattr(self, "_last_judged_parts", {}))
 
         if results.score is not None:
             core = results.score
@@ -401,6 +407,21 @@ Be objective, specific, and constructive.
             f"- Judged rubric: **{judged}/30** — {judged_detail}\n"
             f"- **FINAL: {final_score}/100**\n"
         )
+        if results.section_gates:
+            gate_pct = int(VerifierAgent.SECTION_GATE * 100)
+            lines = []
+            for name, v in results.section_gates.items():
+                if v["na"]:
+                    lines.append(f"  - {name}: n/a (gate waived)")
+                else:
+                    lines.append(f"  - {name}: {v['pct']*100:.0f}% — "
+                                 f"{'PASS' if v['pass'] else 'FAIL'}")
+            report += (
+                f"\n### Section Gates (each must be ≥{gate_pct}% — none compensate)\n"
+                + "\n".join(lines)
+                + f"\n\n**GATES: {'ALL PASS' if results.gates_passed else 'FAILED'}** — "
+                  f"completion requires every gate to pass.\n"
+            )
 
         # Stash the structured result so the orchestrator's plateau detector can
         # compare real progress metrics (tests passed, files) — not just the score.
@@ -614,17 +635,9 @@ Be objective, specific, and constructive.
             return None  # defer to LLM code review
 
         def lint_points(full: float) -> float:
-            # Full-profile lint now; step by issue count.
-            n = results.lint_issues
-            if n == 0:
-                return full
-            if n <= 5:
-                return full * 0.8
-            if n <= 20:
-                return full * 0.5
-            if n <= 50:
-                return full * 0.2
-            return 0.0
+            # Continuous: 0 issues = full, linear to 0 at 20+ issues.
+            # (85%% section gate => at most 3 issues.)
+            return full * max(0.0, 1.0 - results.lint_issues / 20.0)
 
         def test_points(base: float, cov_pts: float) -> float:
             ratio = (results.tests_passed / results.tests_total) if results.tests_total > 0 else 0.0
@@ -695,6 +708,52 @@ Be objective, specific, and constructive.
 
         return summary
 
+    # Non-compensatory section gates: every section must independently clear
+    # this fraction of its maximum for a score to be completion-eligible.
+    # (SonarQube-style quality gate: one failing condition fails the gate.)
+    SECTION_GATE = 0.85
+
+    def _evaluate_section_gates(self, results: VerificationResult,
+                                judged_detail_parts: Dict[str, float]) -> None:
+        """Populate results.section_gates / gates_passed.
+
+        Sections and their percentages (na sections pass by definition —
+        a gate cannot demand what cannot be measured):
+          tests: pass ratio (policy elsewhere already demands 100%%)
+          coverage: measured %% (na when not measured)
+          build / smoke: binary
+          lint: continuous points fraction (<=3 issues at the 0.85 gate)
+          completeness / quality / test_meaning: judged fractions
+          e2e: pass ratio (web apps only)
+        """
+        g: Dict[str, Dict[str, Any]] = {}
+
+        def add(name, pct, na=False):
+            g[name] = {"pct": None if na else round(pct, 3),
+                       "pass": True if na else pct >= self.SECTION_GATE,
+                       "na": na}
+
+        ratio = (results.tests_passed / results.tests_total) if results.tests_total > 0 else 0.0
+        add("tests", ratio)
+        if results.coverage_percent is None:
+            add("coverage", 0.0, na=True)
+        else:
+            add("coverage", min(100.0, results.coverage_percent) / 100.0)
+        add("build", 1.0 if results.build_success else 0.0)
+        if results.smoke_success is None:
+            add("smoke", 0.0, na=True)
+        else:
+            add("smoke", 1.0 if results.smoke_success else 0.0)
+        add("lint", max(0.0, 1.0 - results.lint_issues / 20.0))
+        add("completeness", judged_detail_parts.get("completeness", 0.0) / 15.0)
+        add("quality", judged_detail_parts.get("quality", 0.0) / 10.0)
+        add("test_meaning", judged_detail_parts.get("meaning", 0.0) / 5.0)
+        if results.e2e_tests_total > 0:
+            add("e2e", results.e2e_tests_passed / results.e2e_tests_total)
+
+        results.section_gates = g
+        results.gates_passed = all(v["pass"] for v in g.values())
+
     @staticmethod
     def _parse_checklist(report: str) -> Optional[Dict[str, Any]]:
         """Extract the LAST fenced JSON checklist from the LLM report."""
@@ -723,7 +782,9 @@ Be objective, specific, and constructive.
                 mech = 15.0 * results.rubric_items_verified / results.rubric_items_total
                 if results.rubric_items_total < 5:
                     mech = min(mech, 8.0)
+                self._last_judged_parts = {"completeness": mech, "quality": 0.0, "meaning": 0.0}
                 return round(mech, 1), "checklist missing; mechanical rubric only"
+            self._last_judged_parts = {"completeness": 4.0, "quality": 0.0, "meaning": 0.0}
             return 4.0, "checklist missing; no rubric"
 
         items = checklist.get("rubric_items") or []
@@ -744,6 +805,8 @@ Be objective, specific, and constructive.
 
         detail = (f"completeness {round(completeness,1)}/15 ({passed}/{total} items), "
                   f"quality {quality}/10, tests {meaning}/5")
+        self._last_judged_parts = {"completeness": completeness, "quality": quality,
+                                   "meaning": meaning}
         return round(completeness + quality + meaning, 1), detail
 
     def _extract_score_from_report(self, report: str) -> Optional[float]:
