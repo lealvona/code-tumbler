@@ -369,6 +369,21 @@ Be objective, specific, and constructive.
         llm_score = self._extract_score_from_report(report)
         if llm_score is not None:
             final_score = llm_score
+            # Anti-jitter: when real sandbox metrics exist, the LLM's judged
+            # score may only deviate ±15 from the deterministic automated score.
+            # Identical code quality was oscillating ±20 across iterations on
+            # judged components alone, stalling convergence.
+            if (results.score is not None and not results.code_review_only
+                    and results.tests_total > 0):
+                lo = max(0.0, results.score - 15.0)
+                hi = min(100.0, results.score + 15.0)
+                clamped = min(max(final_score, lo), hi)
+                if clamped != final_score:
+                    logger.info(
+                        f"LLM score {final_score} clamped to {clamped} "
+                        f"(automated baseline {results.score} ± 15)"
+                    )
+                    final_score = clamped
         elif results.score is not None:
             final_score = results.score
         else:

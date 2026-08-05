@@ -544,6 +544,30 @@ remove:
 
             files = all_files
 
+        # Syntax gate: a single broken .py file costs an entire verify round
+        # ("0 tests collected"). Pure compile() check — no imports executed —
+        # with ONE bounded targeted regeneration of just the broken files.
+        broken = self._syntax_check_python(files)
+        if broken:
+            try:
+                summary = "\n".join(f"- {p}: {e}" for p, e in list(broken.items())[:10])
+                logger.info(f"Syntax gate: {len(broken)} broken file(s), regenerating")
+                fixed = self._generate_chunk(
+                    plan, iteration,
+                    f"These files have Python syntax errors — regenerate them "
+                    f"completely and correctly:\n{summary}",
+                    files, list(broken)[:10], 1, 1, None, **kwargs,
+                )
+                for path, content in (fixed or {}).items():
+                    if path in broken:
+                        files[path] = content
+                still = self._syntax_check_python(
+                    {p: files[p] for p in broken if p in files})
+                if still:
+                    logger.warning(f"Syntax gate: {len(still)} file(s) still broken: {list(still)[:5]}")
+            except Exception as e:
+                logger.warning(f"Syntax-gate regeneration failed (continuing): {e}")
+
         # Apply requested deletions of stale files (path-contained, files only,
         # then empty parent dirs bottom-up — per the no-force-deletion policy).
         pending = getattr(self, '_pending_deletes', None)
@@ -801,6 +825,19 @@ remove:
             prefix, len(stripped),
         )
         return stripped
+
+    @staticmethod
+    def _syntax_check_python(files: Dict[str, str]) -> Dict[str, str]:
+        """Compile-check generated .py files (syntax only, nothing executed)."""
+        broken: Dict[str, str] = {}
+        for path, content in files.items():
+            if not path.endswith(".py") or not isinstance(content, str):
+                continue
+            try:
+                compile(content, path, "exec")
+            except SyntaxError as e:
+                broken[path] = f"line {e.lineno}: {e.msg}"
+        return broken
 
     def _apply_deletes(self, paths: List[str], output_dir: Path) -> None:
         """Safely remove engineer-requested stale paths from staging.
