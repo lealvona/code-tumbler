@@ -374,11 +374,16 @@ class APIOrchestrator(Orchestrator):
         self._publish_conversation_update(project_path, "engineer")
         self._publish_thinking(project_path, "engineer")
 
-        # Staged verification: in a protected iteration, snapshot the green
-        # staging first so risky changes can be rolled back file-by-file if
-        # they break the passing suite.
+        # Staged verification ratchet: on EVERY refinement iteration, snapshot
+        # staging so changes that break previously-passing tests can be rolled
+        # back file-by-file. Previously gated on a directive marker in the
+        # prior report — but the marker chain broke across revert rewrites
+        # (the embedded best report predated the directive) and protection
+        # vanished exactly where rampages happen. "Never lose a passing test"
+        # is now unconditional; the baseline-aware verdict keeps it correct on
+        # imperfect baselines by whitelisting chronic failures.
         baseline = None
-        if iteration > 1 and self._is_protected_iteration(project_path, iteration - 1):
+        if iteration > 1:
             baseline = self._snapshot_staging_baseline(project_path, state_mgr)
 
         chunk_cb = self._make_chunk_callback(project_path, "engineer")
@@ -745,23 +750,16 @@ class APIOrchestrator(Orchestrator):
         except OSError as e:
             self.logger.warning(f"Could not append refinement directive: {e}")
 
-    # ── Staged verification (trust-but-verify protected mode) ─────────────
-    # Nothing is forbidden in a protected iteration; instead the green suite
-    # is an enforced invariant. After the engineer writes, changes are
-    # partitioned into safe (new test/doc files) and risky (everything
-    # else); a per-test probe then checks that every PRE-EXISTING test
-    # still passes. Risky changes that break the old suite are rolled back
-    # file-by-file — a regression costs one probe run, not an iteration.
-
-    def _is_protected_iteration(self, project_path: Path, prev_iteration: int) -> bool:
-        """True when the previous iteration's report carries the directive."""
-        if prev_iteration < 1:
-            return False
-        f = project_path / "04_feedback" / f"REPORT_iter{prev_iteration}.md"
-        try:
-            return f.exists() and self._DIRECTIVE_MARKER in f.read_text(encoding="utf-8")
-        except OSError:
-            return False
+    # ── Staged verification ratchet (trust-but-verify) ────────────────────
+    # Nothing is forbidden in a refinement iteration; instead "never lose a
+    # passing test" is an enforced invariant. After the engineer writes,
+    # changes are partitioned into safe (new test/doc files) and risky
+    # (everything else); a per-test probe then checks that every
+    # PRE-EXISTING passing test still passes (chronic failures are
+    # whitelisted via a baseline probe). Risky changes that break the old
+    # suite are rolled back file-by-file, and new tests that fail against
+    # the surviving runtime are quarantined — a regression costs one probe
+    # run, not an iteration.
 
     def _snapshot_staging_baseline(self, project_path: Path,
                                    state_mgr: StateManager) -> Optional[Path]:
@@ -962,9 +960,13 @@ class APIOrchestrator(Orchestrator):
             safe_new, risky_new, risky_mod, deleted = self._partition_changes(
                 baseline, staging)
             risky = sorted(set(risky_new) | set(risky_mod) | set(deleted))
-            if not risky:
-                return
             new_files = set(safe_new) | set(risky_new)
+            if not risky and not new_files:
+                return  # nothing changed — nothing to check
+            # NOTE: safe-only iterations still get probed — a batch of new
+            # failing test files can wreck the score just as thoroughly as a
+            # runtime edit, and skipping the probe here let exactly that
+            # happen (iteration 25 scored 31.2 with zero risky changes).
             vc = self._merged_verification_config(state_mgr)
             probe = self.verifier.run_test_probe(staging, vc)
             if not probe or not probe.get("ran"):
