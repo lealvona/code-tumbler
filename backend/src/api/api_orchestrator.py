@@ -733,8 +733,11 @@ class APIOrchestrator(Orchestrator):
                 "\nA regression is worse than a low score here: any change that "
                 "breaks a passing test will be rejected and reverted.\n"
                 "Runtime edits are STAGE-CHECKED before scoring — a modification "
-                "that breaks a currently-passing test is dropped automatically "
-                "and only your new tests survive.\n")
+                "that breaks a currently-passing test is dropped automatically, "
+                "and new tests that FAIL against the current runtime are "
+                "quarantined. Write tests that PASS against the code AS IT "
+                "EXISTS — do not write tests for behavior you are changing in "
+                "the same iteration.\n")
             with open(report_file, "a", encoding="utf-8") as fh:
                 fh.writelines(lines)
             self.logger.info(
@@ -917,6 +920,33 @@ class APIOrchestrator(Orchestrator):
                 out.append(m.group(1))
         return out
 
+    def _quarantine_failing_new(self, baseline: Path, staging: Path,
+                                probe: Dict[str, Any],
+                                new_files: set) -> List[str]:
+        """Remove NEW test files that fail or error against the surviving
+        runtime. Keeping them ('discovery') sounded principled but loses in
+        practice: the failing tests drag the full-verify score down and the
+        revert-to-best guard then erases the WHOLE iteration — including the
+        passing tests. Keep-only-passing makes protected iterations
+        monotonically non-decreasing. Returns the quarantined paths."""
+        file_of = lambda nid: nid.split("::", 1)[0]
+        failing = {file_of(nid) for nid in probe.get("failed", [])}
+        failing |= set(probe.get("collect_errors", []))
+        targets = sorted(f for f in failing if f in new_files)
+        if targets:
+            self._rollback_files(baseline, staging, targets)
+        return targets
+
+    @staticmethod
+    def _quarantine_note(quarantined: List[str]) -> str:
+        if not quarantined:
+            return " Keeping everything."
+        names = ", ".join(quarantined[:6])
+        more = f" (+{len(quarantined) - 6} more)" if len(quarantined) > 6 else ""
+        return (f" Quarantined {len(quarantined)} new test file(s) that fail "
+                f"against the current runtime: {names}{more}. Passing "
+                f"additions were kept.")
+
     def _log_staged(self, project_path: Path, state_mgr: StateManager,
                     iteration: int, msg: str) -> None:
         self.logger.info(msg)
@@ -948,11 +978,13 @@ class APIOrchestrator(Orchestrator):
                 if base_probe and base_probe.get("ran"):
                     broken = self._old_suite_broken(probe, new_files, base_probe)
             if not broken:
+                q = self._quarantine_failing_new(baseline, staging, probe, new_files)
                 self._log_staged(
                     project_path, state_mgr, iteration,
                     f"Staged verify: the passing suite held with all "
                     f"{len(risky)} runtime change(s) applied "
-                    f"({len(safe_new)} new test/doc file(s)). Keeping everything.")
+                    f"({len(safe_new)} new test/doc file(s))."
+                    + self._quarantine_note(q))
                 return
             restored, removed = self._rollback_files(baseline, staging, risky)
             probe2 = self.verifier.run_test_probe(staging, vc)
@@ -968,12 +1000,17 @@ class APIOrchestrator(Orchestrator):
                     f"change(s) — all of its changes were discarded and the "
                     f"previous green code restored.")
             else:
+                q = []
+                if probe2 and probe2.get("ran"):
+                    q = self._quarantine_failing_new(
+                        baseline, staging, probe2, new_files)
                 self._log_staged(
                     project_path, state_mgr, iteration,
                     f"Staged verify: {len(risky)} runtime change(s) would have "
                     f"broken the passing suite and were dropped ({restored} "
-                    f"file(s) restored, {removed} removed); {len(safe_new)} new "
-                    f"test/doc file(s) were kept.")
+                    f"file(s) restored, {removed} removed); "
+                    f"{len(safe_new) - len(q)} new test/doc file(s) were kept."
+                    + self._quarantine_note(q))
         except Exception as e:
             self.logger.warning(f"Staged verify skipped on error: {e}")
         finally:
