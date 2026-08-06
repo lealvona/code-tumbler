@@ -646,6 +646,60 @@ class APIOrchestrator(Orchestrator):
             root.setLevel(logging.DEBUG)
         return handler
 
+    # Gates that reflect test/hygiene shortfalls rather than broken runtime
+    # code. When ONLY these fail while build + every test pass, the next
+    # iteration must not touch working code — chasing coverage with runtime
+    # edits is how two prior iterations broke a green suite.
+    _PROTECTABLE_GATES = {"coverage", "quality", "test_meaning"}
+
+    def _append_gate_directive(self, project_path: Path, iteration: int, vres) -> None:
+        """Append a protected-mode directive to the iteration report when the
+        runtime code is fully healthy (build + all tests green) and only
+        coverage/quality-style gates are below the bar.
+        """
+        try:
+            gates = getattr(vres, "section_gates", {}) or {}
+            failing = [k for k, v in gates.items() if not v.get("pass")]
+            all_green = (
+                getattr(vres, "build_success", False)
+                and (getattr(vres, "tests_total", 0) or 0) > 0
+                and getattr(vres, "tests_passed", 0) == getattr(vres, "tests_total", 0)
+            )
+            if not (failing and all_green and set(failing) <= self._PROTECTABLE_GATES):
+                return
+            report_file = project_path / "04_feedback" / f"REPORT_iter{iteration}.md"
+            if not report_file.exists():
+                return
+            lines = [
+                "\n\n---\n\n# REFINEMENT DIRECTIVE — PROTECTED MODE (mandatory)\n\n",
+                "Build succeeds and EVERY test passes. The only failing gates are: "
+                + ", ".join(sorted(failing)) + ".\n\n",
+                "The working runtime code is PROTECTED this iteration:\n",
+                "- Do NOT modify, rename, move, or refactor any existing runtime module.\n",
+                "- Do NOT change any `__init__.py` exports or the import structure.\n",
+                "- Do NOT rewrite existing passing tests.\n\n",
+                "Allowed changes ONLY:\n",
+            ]
+            if "coverage" in failing:
+                cov = getattr(vres, "coverage_percent", None)
+                cov_s = f" (currently {cov:.0f}%)" if isinstance(cov, (int, float)) else ""
+                lines.append(
+                    f"- ADD new test files/functions exercising uncovered modules "
+                    f"and branches{cov_s} — target ≥85% coverage.\n")
+            if "quality" in failing or "test_meaning" in failing:
+                lines.append(
+                    "- DELETE dead/unused code flagged in this report (use the "
+                    "\"delete\" array) or add the missing docs — nothing else.\n")
+            lines.append(
+                "\nA regression is worse than a low score here: any change that "
+                "breaks a passing test will be rejected and reverted.\n")
+            with open(report_file, "a", encoding="utf-8") as fh:
+                fh.writelines(lines)
+            self.logger.info(
+                f"Protected-mode directive appended (failing gates: {', '.join(sorted(failing))})")
+        except OSError as e:
+            self.logger.warning(f"Could not append refinement directive: {e}")
+
     def run_cycle(self, project_path: Path):
         """Run the full tumbling cycle for a project (called from API).
 
@@ -796,6 +850,8 @@ class APIOrchestrator(Orchestrator):
                     )
                     self._publish_conversation_update(project_path, "system")
                 vres = getattr(self.verifier, "last_result", None)
+                if not reverted and vres is not None:
+                    self._append_gate_directive(project_path, iteration, vres)
                 staging = project_path / "03_staging"
                 skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv'}
                 file_count = sum(
