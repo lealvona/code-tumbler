@@ -380,12 +380,30 @@ class Orchestrator:
             return None
         parts: List[str] = []
         for f in sorted(spec_dir.rglob("*.yaml")):
+            # Authoring template, not project spec — noise in the prompt.
+            if f.name == "_template.yaml":
+                continue
             try:
                 rel = f.relative_to(project_path).as_posix()
                 parts.append(f"### {rel}\n\n{f.read_text(encoding='utf-8')}")
             except OSError:
                 continue
         return "\n\n".join(parts) if parts else None
+
+    def _read_rubric(self, project_path: Path) -> Optional[str]:
+        """Read the Architect-generated RUBRIC.yaml (spec acceptance criteria).
+
+        Passed to the Engineer so spec-mandated details (exact env var names,
+        behaviors) survive the plan hop instead of being lost in translation.
+        """
+        rubric_file = project_path / "02_plan" / "RUBRIC.yaml"
+        try:
+            if rubric_file.exists():
+                text = rubric_file.read_text(encoding='utf-8').strip()
+                return text or None
+        except OSError:
+            pass
+        return None
 
     def _run_specifier(self, project_path: Path, state_mgr: StateManager):
         """Run the Phase-1 Specifier agent: idea -> YAML spec suite.
@@ -561,6 +579,7 @@ class Orchestrator:
             previous_code=previous_code,
             output_dir=staging_dir,
             rules=self._render_rules(project_path),
+            rubric=self._read_rubric(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -641,9 +660,14 @@ class Orchestrator:
                 skip_ext = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
                             '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff',
                             '.woff2', '.ttf', '.eot', '.zip', '.tar', '.gz'}
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                             '.venv', 'venv', '.git', 'dist', 'build'}
                 max_file_size = 50_000
                 for file_path in staging_dir.rglob('*'):
                     if file_path.is_file() and file_path.name != '.manifest.json':
+                        rel_parts = file_path.relative_to(staging_dir).parts
+                        if any(part in skip_dirs for part in rel_parts[:-1]):
+                            continue
                         if file_path.suffix.lower() in skip_ext:
                             continue
                         rel_path = file_path.relative_to(staging_dir)
@@ -801,9 +825,14 @@ class Orchestrator:
                 skip_ext = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.bin',
                             '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff',
                             '.woff2', '.ttf', '.eot', '.zip', '.tar', '.gz'}
+                skip_dirs = {'.sandbox_deps', 'node_modules', '__pycache__',
+                             '.venv', 'venv', '.git', 'dist', 'build'}
                 max_file_size = 50_000
                 for file_path in staging_dir.rglob('*'):
                     if file_path.is_file() and file_path.name != '.manifest.json':
+                        rel_parts = file_path.relative_to(staging_dir).parts
+                        if any(part in skip_dirs for part in rel_parts[:-1]):
+                            continue
                         if file_path.suffix.lower() in skip_ext:
                             continue
                         rel_path = file_path.relative_to(staging_dir)
@@ -824,6 +853,7 @@ class Orchestrator:
             previous_code=previous_code,
             output_dir=staging_dir,
             rules=self._render_rules(project_path),
+            rubric=self._read_rubric(project_path),
             temperature=0.3,
             compression_config=compression_config,
         )
@@ -966,7 +996,7 @@ class Orchestrator:
                 staging, dest, dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns(
                     '.sandbox_deps', 'node_modules', '__pycache__', '.venv', 'venv',
-                    '.git', 'dist', 'build', '.manifest.json'),
+                    '.git', 'dist', 'build', '.manifest.json', '.coveragerc-sandbox'),
             )
             state = state_mgr.load_state()
             state['best_score'] = score
@@ -1093,7 +1123,7 @@ class Orchestrator:
                 rel = file_path.relative_to(staging_dir)
                 if any(part in exclude_dirs for part in rel.parts[:-1]):
                     continue
-                if rel.name == '.manifest.json':
+                if rel.name in ('.manifest.json', '.coveragerc-sandbox'):
                     continue
                 zf.write(file_path, rel.as_posix())
 

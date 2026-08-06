@@ -681,6 +681,14 @@ class APIOrchestrator(Orchestrator):
             # Fresh start: full reset
             state_mgr.reset_for_run()
 
+        # Persist the effective threshold so the UI's "target" matches the
+        # policy this run actually enforces (state may hold a stale
+        # creation-time default).
+        state = state_mgr.load_state()
+        if state.get('quality_threshold') != self.quality_threshold:
+            state['quality_threshold'] = self.quality_threshold
+            state_mgr.save_state(state)
+
         # Set up per-project log file
         log_handler = self._setup_project_logger(project_path)
 
