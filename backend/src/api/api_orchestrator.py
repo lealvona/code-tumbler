@@ -253,6 +253,15 @@ class APIOrchestrator(Orchestrator):
         try:
             super()._run_specifier(project_path, state_mgr)
         except Exception as e:
+            # Persist whatever streamed before the failure — losing a slow
+            # local generation AND its evidence makes diagnosis archaeology.
+            partial = chunk_cb._get_full_content()
+            if partial:
+                state_mgr.log_conversation(
+                    agent="specifier", role="output", iteration=0,
+                    content=partial[:30000],
+                    metadata={"label": "Specifier Output (failed)"},
+                )
             state_mgr.log_conversation(
                 agent="specifier", role="error", iteration=0,
                 content=f"Specifier agent failed: {e}",

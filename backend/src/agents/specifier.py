@@ -82,6 +82,9 @@ class SpecifierAgent(BaseAgent):
             "JSON envelope exactly as described in your system prompt. Return ONLY "
             "the JSON object — no prose, no markdown fences."
         )
+        correction = context.get("format_correction")
+        if correction:
+            user += f"\n\n# FORMAT CORRECTION (mandatory)\n\n{correction}"
         return [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user},
@@ -114,12 +117,29 @@ class SpecifierAgent(BaseAgent):
                 except json.JSONDecodeError:
                     obj = None
 
-        if not isinstance(obj, dict) or "files" not in obj:
+        if not isinstance(obj, dict):
             raise ValueError("Specifier output did not contain a valid {\"files\": [...]} envelope")
 
-        files = obj.get("files", [])
+        files = obj.get("files")
+
+        # Dialect: {"files": {path: content}} — files as a map.
+        if isinstance(files, dict):
+            files = [{"path": p, "content": c} for p, c in files.items()
+                     if isinstance(p, str) and isinstance(c, str)]
+
+        # Dialect: flat {path: content} map at the top level. Small local
+        # models produce this valid-but-differently-shaped JSON reliably;
+        # rejecting 25k chars of good spec content over envelope shape wastes
+        # an entire (slow) generation.
+        if files is None:
+            flat = [(k, v) for k, v in obj.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                    and ("/" in k or k.endswith((".yaml", ".yml", ".md")))]
+            if flat and len(flat) >= max(1, int(0.5 * len(obj))):
+                files = [{"path": p, "content": c} for p, c in flat]
+
         if not isinstance(files, list) or not files:
-            raise ValueError("Specifier envelope contained no files")
+            raise ValueError("Specifier output did not contain a valid {\"files\": [...]} envelope")
         return files
 
     # ── generation ───────────────────────────────────────────────────────────
@@ -144,7 +164,27 @@ class SpecifierAgent(BaseAgent):
             kwargs.setdefault("response_format", {"type": "json_object"})
 
         raw = self.execute(context, **kwargs)
-        file_objs = self._parse_envelope(raw)
+        try:
+            file_objs = self._parse_envelope(raw)
+        except ValueError:
+            # One corrective retry: tell the model exactly what shape came
+            # back and what is required. Small models usually comply on the
+            # second attempt; without this, a malformed envelope costs the
+            # whole (slow, local) generation.
+            logger.warning("Specifier envelope parse failed — retrying with "
+                           "format correction (got %d chars)", len(raw))
+            retry_ctx = dict(context)
+            retry_ctx["format_correction"] = (
+                "Your previous attempt was NOT the required shape. It began "
+                f"with: {raw[:200]!r}\n"
+                "You MUST return a single JSON object with EXACTLY one top-level "
+                'key "files", whose value is an ARRAY of objects, each with '
+                '"path" and "content" string fields:\n'
+                '{"files": [{"path": "spec/00-base.yaml", "content": "..."}, ...]}\n'
+                "Do NOT use file paths as top-level keys."
+            )
+            raw = self.execute(retry_ctx, **kwargs)
+            file_objs = self._parse_envelope(raw)
 
         files: Dict[str, str] = {}
         guides: Dict[str, Any] = {}
