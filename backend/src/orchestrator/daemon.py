@@ -972,17 +972,22 @@ class Orchestrator:
             plan_file = project_path / "02_plan" / "PLAN.md"
             plan_file.touch()
 
-    def _snapshot_best(self, project_path: Path, state_mgr: StateManager, score: float):
-        """Keep a copy of staging whenever the score improves.
+    def _snapshot_best(self, project_path: Path, state_mgr: StateManager,
+                       score: float, eligible: bool = False):
+        """Keep a copy of staging whenever the iteration RANKS above the best.
 
-        The engineer can regress on later iterations (a bad rewrite after a good
-        one); when the run is force-finalized at max_iterations, we archive the
-        BEST iteration's code, not whatever the last roll of the dice produced.
+        Ranking is lexicographic (recognition_eligible, score): code whose
+        build succeeds with EVERY test passing outranks a higher-scoring
+        iteration that carries failing tests, because only eligible code can
+        ever complete a run — and the judged 30 points carry enough noise
+        (±1) that raw score alone shipped known-broken code over a strictly
+        better fix (iteration 16's judge-lucky 94.7 beat 37/37 code at 94.0).
         """
         import shutil
         state = state_mgr.load_state()
         best = state.get('best_score')
-        if best is not None and score <= best:
+        best_eligible = bool(state.get('best_eligible', False))
+        if best is not None and (eligible, score) <= (best_eligible, best):
             return
         staging = project_path / "03_staging"
         if not staging.exists():
@@ -1001,8 +1006,11 @@ class Orchestrator:
             state = state_mgr.load_state()
             state['best_score'] = score
             state['best_iteration'] = state.get('iteration', 0)
+            state['best_eligible'] = eligible
             state_mgr.save_state(state)
-            self.logger.info(f"Snapshotted best iteration (score {score}/100)")
+            self.logger.info(
+                f"Snapshotted best iteration (score {score}/100, "
+                f"recognition-eligible: {eligible})")
         except OSError as e:
             self.logger.warning(f"Best-iteration snapshot failed: {e}")
 
