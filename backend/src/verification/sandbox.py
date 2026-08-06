@@ -496,6 +496,84 @@ class SandboxExecutor:
         except Exception as e:
             logger.warning(f"Failed to extract workspace from container: {e}")
 
+    def run_python_test_probe(self, project_path: Path) -> Dict[str, Any]:
+        """Fast pytest run reporting PER-TEST outcomes (staged verification).
+
+        Runs the suite with -v and no coverage/lint so the caller can tell
+        whether failures live in pre-existing or newly added test files.
+        Network none; deps come from the persisted .sandbox_deps.
+        """
+        workspace = str(project_path.resolve())
+        env_exports = [
+            f"export PYTHONPATH=/workspace/src:/workspace:/workspace/{_PY_DEPS}",
+            f"export PATH=/workspace/{_PY_DEPS}/bin:$PATH",
+        ]
+
+        # Post-revert staging is restored from a deps-free snapshot; without a
+        # bootstrap the probe would see "No module named pytest" and misread a
+        # healthy suite as wrecked. Run the standard install phase (round-trips
+        # deps back to the host workspace) whenever .sandbox_deps is absent.
+        if not (project_path / _PY_DEPS).is_dir():
+            self._run_container(
+                image="python:3.12-slim",
+                commands=[_PY_INSTALL_CMD],
+                workspace_path=workspace,
+                timeout=self.config.timeout_install,
+                network_mode="bridge" if self.config.network_install else "none",
+                label="probe-install",
+                extract_workspace=True,
+                env_exports=env_exports,
+            )
+
+        cmd = (
+            f'python -m pytest "$([ -d tests ] && echo tests || echo .)" '
+            f'-v --tb=no -rEf --continue-on-collection-errors '
+            f'--ignore={_PY_DEPS} -p no:cacheprovider 2>&1 || true'
+        )
+        results = self._run_container(
+            image="python:3.12-slim",
+            commands=[cmd],
+            workspace_path=workspace,
+            timeout=self.config.timeout_test,
+            network_mode="none",
+            label="probe",
+            env_exports=env_exports,
+        )
+        out = (results[0].stdout or "") if results else ""
+        # pytest must have actually executed — otherwise (missing deps, crash)
+        # report ran=False so the caller skips staged decisions entirely.
+        executed = bool(re.search(r"collected \d+ item|no tests ran|=+ .+ in [\d.]+s", out))
+        passed: List[str] = []
+        failed: List[str] = []
+        collect_errors: List[str] = []
+        for line in out.splitlines():
+            line = line.strip()
+            m = re.match(r'^(\S+::\S+)\s+(PASSED|FAILED|ERROR)\b', line)
+            if m:
+                (passed if m.group(2) == "PASSED" else failed).append(m.group(1))
+                continue
+            m = re.match(r'^(?:FAILED|ERROR)\s+(\S+?\.py)(?:::(\S+))?', line)
+            if m:
+                nid = m.group(1) + (f"::{m.group(2)}" if m.group(2) else "")
+                if m.group(2):
+                    if nid not in failed:
+                        failed.append(nid)
+                elif m.group(1) not in collect_errors:
+                    collect_errors.append(m.group(1))
+        m = re.search(r"while loading conftest '([^']+)'", out)
+        if m:
+            rel = m.group(1)
+            rel = rel[len("/workspace/"):] if rel.startswith("/workspace/") else rel
+            if rel not in collect_errors:
+                collect_errors.append(rel)
+        return {
+            "ran": bool(results) and executed,
+            "passed": passed,
+            "failed": failed,
+            "collect_errors": collect_errors,
+            "output_tail": out[-2000:],
+        }
+
     def _run_container(
         self,
         image: str,
