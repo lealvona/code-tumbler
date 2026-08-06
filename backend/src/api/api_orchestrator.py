@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -698,16 +699,36 @@ class APIOrchestrator(Orchestrator):
                 "- Do NOT rewrite existing passing tests.\n\n",
                 "Allowed changes ONLY:\n",
             ]
+            test_output = getattr(vres, "test_output", "") or ""
             if "coverage" in failing:
                 cov = getattr(vres, "coverage_percent", None)
                 cov_s = f" (currently {cov:.0f}%)" if isinstance(cov, (int, float)) else ""
                 lines.append(
                     f"- ADD new test files/functions exercising uncovered modules "
                     f"and branches{cov_s} — target ≥85% coverage.\n")
+                misses = self._coverage_misses(test_output)
+                if misses:
+                    lines.append(
+                        "\nUncovered code by file — write tests that execute "
+                        "EXACTLY these lines:\n")
+                    for name, miss, cover, missing in misses:
+                        loc = f" (lines {missing})" if missing else ""
+                        lines.append(
+                            f"- `{name}` — {cover}% covered, {miss} statements "
+                            f"missed{loc}\n")
             if "quality" in failing or "test_meaning" in failing:
                 lines.append(
                     "- DELETE dead/unused code flagged in this report (use the "
                     "\"delete\" array) or add the missing docs — nothing else.\n")
+            broken_tests = self._collection_error_files(test_output)
+            if broken_tests:
+                lines.append(
+                    "\nThese test files FAIL TO IMPORT on every run — dead "
+                    "weight dragging the quality score; DELETE them via the "
+                    "\"delete\" array (or fix the import only if it is a "
+                    "one-line wrong module name):\n")
+                for f in broken_tests:
+                    lines.append(f"- `{f}`\n")
             lines.append(
                 "\nA regression is worse than a low score here: any change that "
                 "breaks a passing test will be rejected and reverted.\n"
@@ -843,17 +864,58 @@ class APIOrchestrator(Orchestrator):
         return merged
 
     @staticmethod
-    def _old_suite_broken(probe: Dict[str, Any], new_files: set) -> bool:
+    def _old_suite_broken(probe: Dict[str, Any], new_files: set,
+                          baseline_probe: Optional[Dict[str, Any]] = None) -> bool:
         """True when any pre-existing test fails/errors — or nothing passes
-        at all (the baseline was green, so zero passing means wreckage)."""
+        at all (the baseline was green, so zero passing means wreckage).
+
+        baseline_probe, when available, whitelists failures that were ALREADY
+        present before this iteration (e.g. a chronic collection error in a
+        stale test file) so pre-existing rot can't masquerade as breakage.
+        """
+        base_failed = set((baseline_probe or {}).get("failed", []))
+        base_errors = set((baseline_probe or {}).get("collect_errors", []))
         if not probe.get("passed"):
             return True
         file_of = lambda nid: nid.split("::", 1)[0]
-        if any(file_of(nid) not in new_files for nid in probe.get("failed", [])):
-            return True
-        if any(f not in new_files for f in probe.get("collect_errors", [])):
-            return True
+        for nid in probe.get("failed", []):
+            if file_of(nid) not in new_files and nid not in base_failed:
+                return True
+        for f in probe.get("collect_errors", []):
+            if f not in new_files and f not in base_errors:
+                return True
         return False
+
+    @staticmethod
+    def _coverage_misses(test_output: str, limit: int = 8):
+        """Rows from a term-missing coverage table with misses, worst first:
+        [(name, missed, cover_pct, missing_lines_str), ...]."""
+        rows = []
+        for line in test_output.splitlines():
+            m = re.match(r'^(\S+\.py)\s+(\d+)\s+(\d+)\s+(\d+)%\s*(.*)$', line.strip())
+            if m and m.group(1) != 'TOTAL':
+                miss = int(m.group(3))
+                if miss > 0:
+                    missing = m.group(5).strip()[:120]
+                    rows.append((m.group(1), miss, int(m.group(4)), missing))
+        # A file can appear once per pytest-cov section; keep the first.
+        seen, uniq = set(), []
+        for r in rows:
+            if r[0] not in seen:
+                seen.add(r[0])
+                uniq.append(r)
+        uniq.sort(key=lambda r: -r[1])
+        return uniq[:limit]
+
+    @staticmethod
+    def _collection_error_files(test_output: str) -> List[str]:
+        """Test files that error at collection time (chronic dead weight)."""
+        out: List[str] = []
+        for line in test_output.splitlines():
+            m = re.match(r'^ERROR (\S+\.py)', line.strip())
+            if m and m.group(1) not in out:
+                out.append(m.group(1))
+        return out
 
     def _log_staged(self, project_path: Path, state_mgr: StateManager,
                     iteration: int, msg: str) -> None:
@@ -877,7 +939,15 @@ class APIOrchestrator(Orchestrator):
             probe = self.verifier.run_test_probe(staging, vc)
             if not probe or not probe.get("ran"):
                 return  # probe unavailable — the full verification pass decides
-            if not self._old_suite_broken(probe, new_files):
+            broken = self._old_suite_broken(probe, new_files)
+            base_probe = None
+            if broken:
+                # Second opinion: probe the untouched baseline so chronic
+                # pre-existing failures don't get pinned on this iteration.
+                base_probe = self.verifier.run_test_probe(baseline, vc)
+                if base_probe and base_probe.get("ran"):
+                    broken = self._old_suite_broken(probe, new_files, base_probe)
+            if not broken:
                 self._log_staged(
                     project_path, state_mgr, iteration,
                     f"Staged verify: the passing suite held with all "
@@ -886,7 +956,8 @@ class APIOrchestrator(Orchestrator):
                 return
             restored, removed = self._rollback_files(baseline, staging, risky)
             probe2 = self.verifier.run_test_probe(staging, vc)
-            if probe2 and probe2.get("ran") and self._old_suite_broken(probe2, new_files):
+            if probe2 and probe2.get("ran") and self._old_suite_broken(
+                    probe2, new_files, base_probe):
                 # Even the "safe" additions (e.g. a new conftest) are toxic —
                 # discard the whole iteration and restore the green baseline.
                 self._rollback_files(baseline, staging, safe_new)
