@@ -1224,7 +1224,16 @@ class APIOrchestrator(Orchestrator):
                 # the run even if the coarse score hasn't moved yet.
                 score = state_mgr.get_score() or 0.0
                 iteration = state_mgr.get_iteration()
-                self._snapshot_best(project_path, state_mgr, score)
+                vres_now = getattr(self.verifier, "last_result", None)
+                eligible_now = bool(
+                    vres_now is not None
+                    and not getattr(vres_now, "code_review_only", False)
+                    and getattr(vres_now, "build_success", False)
+                    and (getattr(vres_now, "tests_total", 0) or 0) > 0
+                    and getattr(vres_now, "tests_passed", 0)
+                    == getattr(vres_now, "tests_total", 0))
+                self._snapshot_best(project_path, state_mgr, score,
+                                    eligible=eligible_now)
                 reverted = self._revert_to_best(project_path, state_mgr, score,
                                                 consecutive_reverts + 1)
                 consecutive_reverts = consecutive_reverts + 1 if reverted else 0
