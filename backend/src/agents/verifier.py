@@ -839,6 +839,44 @@ Be objective, specific, and constructive.
     # Active Specification Alignment methods
     # ------------------------------------------------------------------
 
+    def run_test_probe(self, project_path: Path,
+                       verification_config: Any = None) -> Optional[Dict[str, Any]]:
+        """Per-test pytest probe for staged verification.
+
+        Returns {ran, passed, failed, collect_errors, output_tail} with
+        individual test node IDs, or None when the project isn't Python or
+        the sandbox can't run — the caller must then skip staged decisions
+        and let the full verification pass judge everything.
+        """
+        try:
+            from verification.sandbox import SandboxExecutor, SandboxConfig
+        except ImportError:
+            from ..verification.sandbox import SandboxExecutor, SandboxConfig
+        p = Path(project_path)
+        if not ((p / "requirements.txt").exists() or (p / "pyproject.toml").exists()):
+            return None
+        try:
+            cfg = None
+            vc = verification_config
+            if vc is not None:
+                cfg = SandboxConfig(
+                    enabled=vc.sandbox_enabled,
+                    timeout_install=vc.timeout_install,
+                    timeout_build=vc.timeout_build,
+                    timeout_test=vc.timeout_test,
+                    timeout_lint=vc.timeout_lint,
+                    memory_limit=vc.memory_limit,
+                    cpu_limit=vc.cpu_limit,
+                    tmpfs_size=vc.tmpfs_size,
+                    network_install=vc.network_install,
+                    network_verify=vc.network_verify,
+                )
+            executor = SandboxExecutor(config=cfg)
+            return executor.run_python_test_probe(p)
+        except Exception as e:
+            logger.warning(f"Test probe unavailable: {e}")
+            return None
+
     def _load_rubric(self, project_path: Path) -> Optional[Any]:
         """Load RUBRIC.yaml from the 02_plan directory.
 

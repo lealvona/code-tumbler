@@ -26,7 +26,8 @@ _CLEARABLE_PROJECT_SUBDIRS = frozenset({
 
 _CLEARABLE_STATE_SUBDIRS = frozenset({
     "logs",
-    "best_staging",   # snapshot of the highest-scoring iteration's staging
+    "best_staging",     # snapshot of the highest-scoring iteration's staging
+    "staged_baseline",  # pre-iteration staging snapshot for staged verification
 })
 
 

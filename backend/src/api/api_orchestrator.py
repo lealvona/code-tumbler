@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from orchestrator.daemon import Orchestrator
 from orchestrator.state_manager import StateManager
 from api.event_bus import EventBus
@@ -372,10 +373,19 @@ class APIOrchestrator(Orchestrator):
         self._publish_conversation_update(project_path, "engineer")
         self._publish_thinking(project_path, "engineer")
 
+        # Staged verification: in a protected iteration, snapshot the green
+        # staging first so risky changes can be rolled back file-by-file if
+        # they break the passing suite.
+        baseline = None
+        if iteration > 1 and self._is_protected_iteration(project_path, iteration - 1):
+            baseline = self._snapshot_staging_baseline(project_path, state_mgr)
+
         chunk_cb = self._make_chunk_callback(project_path, "engineer")
         self.engineer._on_chunk = chunk_cb
         try:
             super()._run_engineer(project_path, state_mgr)
+            if baseline is not None:
+                self._staged_verify(project_path, state_mgr, baseline, iteration)
         except Exception as e:
             state_mgr.log_conversation(
                 agent="engineer", role="error", iteration=iteration,
@@ -652,6 +662,14 @@ class APIOrchestrator(Orchestrator):
     # edits is how two prior iterations broke a green suite.
     _PROTECTABLE_GATES = {"coverage", "quality", "test_meaning"}
 
+    # Heading marker shared by the directive writer and the staged-verify
+    # trigger check — they must never drift apart.
+    _DIRECTIVE_MARKER = "REFINEMENT DIRECTIVE — PROTECTED MODE"
+
+    # Dirs never snapshotted/diffed by staged verification (deps, caches).
+    _STAGE_IGNORE = ('.sandbox_deps', 'node_modules', '__pycache__',
+                     '.venv', 'venv', '.git', 'dist', 'build')
+
     def _append_gate_directive(self, project_path: Path, iteration: int, vres) -> None:
         """Append a protected-mode directive to the iteration report when the
         runtime code is fully healthy (build + all tests green) and only
@@ -671,7 +689,7 @@ class APIOrchestrator(Orchestrator):
             if not report_file.exists():
                 return
             lines = [
-                "\n\n---\n\n# REFINEMENT DIRECTIVE — PROTECTED MODE (mandatory)\n\n",
+                f"\n\n---\n\n# {self._DIRECTIVE_MARKER} (mandatory)\n\n",
                 "Build succeeds and EVERY test passes. The only failing gates are: "
                 + ", ".join(sorted(failing)) + ".\n\n",
                 "The working runtime code is PROTECTED this iteration:\n",
@@ -692,13 +710,207 @@ class APIOrchestrator(Orchestrator):
                     "\"delete\" array) or add the missing docs — nothing else.\n")
             lines.append(
                 "\nA regression is worse than a low score here: any change that "
-                "breaks a passing test will be rejected and reverted.\n")
+                "breaks a passing test will be rejected and reverted.\n"
+                "Runtime edits are STAGE-CHECKED before scoring — a modification "
+                "that breaks a currently-passing test is dropped automatically "
+                "and only your new tests survive.\n")
             with open(report_file, "a", encoding="utf-8") as fh:
                 fh.writelines(lines)
             self.logger.info(
                 f"Protected-mode directive appended (failing gates: {', '.join(sorted(failing))})")
         except OSError as e:
             self.logger.warning(f"Could not append refinement directive: {e}")
+
+    # ── Staged verification (trust-but-verify protected mode) ─────────────
+    # Nothing is forbidden in a protected iteration; instead the green suite
+    # is an enforced invariant. After the engineer writes, changes are
+    # partitioned into safe (new test/doc files) and risky (everything
+    # else); a per-test probe then checks that every PRE-EXISTING test
+    # still passes. Risky changes that break the old suite are rolled back
+    # file-by-file — a regression costs one probe run, not an iteration.
+
+    def _is_protected_iteration(self, project_path: Path, prev_iteration: int) -> bool:
+        """True when the previous iteration's report carries the directive."""
+        if prev_iteration < 1:
+            return False
+        f = project_path / "04_feedback" / f"REPORT_iter{prev_iteration}.md"
+        try:
+            return f.exists() and self._DIRECTIVE_MARKER in f.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+    def _snapshot_staging_baseline(self, project_path: Path,
+                                   state_mgr: StateManager) -> Optional[Path]:
+        """Copy pre-iteration staging (sans deps) for rollback capability."""
+        import shutil
+        staging = project_path / "03_staging"
+        if not staging.exists():
+            return None
+        dest = project_path / ".tumbler" / "staged_baseline"
+        try:
+            if dest.exists():
+                from orchestrator.state_manager import _CLEARABLE_STATE_SUBDIRS
+                state_mgr._safe_clear_dir(dest, allowed_names=_CLEARABLE_STATE_SUBDIRS)
+            shutil.copytree(
+                staging, dest, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    *self._STAGE_IGNORE, '.manifest.json', '.coveragerc-sandbox'))
+            return dest
+        except OSError as e:
+            self.logger.warning(f"Staged-verify baseline snapshot failed: {e}")
+            return None
+
+    @staticmethod
+    def _is_safe_new(rel: str) -> bool:
+        """New files that cannot break runtime code: tests and docs."""
+        name = rel.rsplit('/', 1)[-1]
+        if name.endswith(('.md', '.rst')):
+            return True
+        in_tests = rel.startswith(('tests/', 'test/')) or '/tests/' in rel or '/test/' in rel
+        looks_test = ((name.startswith('test_') or name.endswith('_test.py'))
+                      and name.endswith('.py'))
+        return (in_tests and name.endswith('.py')) or looks_test
+
+    def _walk_stage_files(self, root: Path) -> Dict[str, Path]:
+        out: Dict[str, Path] = {}
+        for p in root.rglob('*'):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(root)
+            if any(part in self._STAGE_IGNORE for part in rel.parts[:-1]):
+                continue
+            if rel.name in ('.manifest.json', '.coveragerc-sandbox'):
+                continue
+            out[rel.as_posix()] = p
+        return out
+
+    def _partition_changes(self, baseline: Path, staging: Path):
+        """Classify staging vs baseline: (safe_new, risky_new, risky_modified,
+        deleted). Safe = new test/doc files; risky = everything else."""
+        base = self._walk_stage_files(baseline)
+        cur = self._walk_stage_files(staging)
+        safe_new, risky_new, risky_mod = [], [], []
+        for rel, p in cur.items():
+            if rel not in base:
+                (safe_new if self._is_safe_new(rel) else risky_new).append(rel)
+            else:
+                try:
+                    if p.read_bytes() != base[rel].read_bytes():
+                        risky_mod.append(rel)
+                except OSError:
+                    risky_mod.append(rel)
+        deleted = [rel for rel in base if rel not in cur]
+        return safe_new, risky_new, risky_mod, deleted
+
+    def _rollback_files(self, baseline: Path, staging: Path,
+                        rels: List[str]) -> Tuple[int, int]:
+        """Restore listed paths from the baseline (modifications/deletions)
+        or remove them (files new this iteration). Path-contained; no
+        recursive deletion."""
+        import shutil
+        restored = removed = 0
+        staging_resolved = staging.resolve()
+        for rel in rels:
+            dst = staging / rel
+            try:
+                if not dst.resolve().is_relative_to(staging_resolved):
+                    continue
+            except OSError:
+                continue
+            src = baseline / rel
+            try:
+                if src.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    restored += 1
+                elif dst.is_file():
+                    dst.unlink()
+                    removed += 1
+            except OSError as e:
+                self.logger.warning(f"Staged-verify rollback skipped {rel}: {e}")
+        return restored, removed
+
+    def _merged_verification_config(self, state_mgr: StateManager):
+        merged = self._config.verification if self._config else None
+        if merged is None:
+            return None
+        overrides = state_mgr.get_verification_overrides()
+        if overrides:
+            fields = {k: v for k, v in overrides.items()
+                      if k in {f.name for f in dataclasses.fields(VerificationConfig)}}
+            if fields:
+                merged = dataclasses.replace(merged, **fields)
+        return merged
+
+    @staticmethod
+    def _old_suite_broken(probe: Dict[str, Any], new_files: set) -> bool:
+        """True when any pre-existing test fails/errors — or nothing passes
+        at all (the baseline was green, so zero passing means wreckage)."""
+        if not probe.get("passed"):
+            return True
+        file_of = lambda nid: nid.split("::", 1)[0]
+        if any(file_of(nid) not in new_files for nid in probe.get("failed", [])):
+            return True
+        if any(f not in new_files for f in probe.get("collect_errors", [])):
+            return True
+        return False
+
+    def _log_staged(self, project_path: Path, state_mgr: StateManager,
+                    iteration: int, msg: str) -> None:
+        self.logger.info(msg)
+        state_mgr.log_conversation(
+            agent="system", role="status", iteration=iteration,
+            content=msg, metadata={"label": "Staged Verify"})
+        self._publish_conversation_update(project_path, "system")
+
+    def _staged_verify(self, project_path: Path, state_mgr: StateManager,
+                       baseline: Path, iteration: int) -> None:
+        staging = project_path / "03_staging"
+        try:
+            safe_new, risky_new, risky_mod, deleted = self._partition_changes(
+                baseline, staging)
+            risky = sorted(set(risky_new) | set(risky_mod) | set(deleted))
+            if not risky:
+                return
+            new_files = set(safe_new) | set(risky_new)
+            vc = self._merged_verification_config(state_mgr)
+            probe = self.verifier.run_test_probe(staging, vc)
+            if not probe or not probe.get("ran"):
+                return  # probe unavailable — the full verification pass decides
+            if not self._old_suite_broken(probe, new_files):
+                self._log_staged(
+                    project_path, state_mgr, iteration,
+                    f"Staged verify: the passing suite held with all "
+                    f"{len(risky)} runtime change(s) applied "
+                    f"({len(safe_new)} new test/doc file(s)). Keeping everything.")
+                return
+            restored, removed = self._rollback_files(baseline, staging, risky)
+            probe2 = self.verifier.run_test_probe(staging, vc)
+            if probe2 and probe2.get("ran") and self._old_suite_broken(probe2, new_files):
+                # Even the "safe" additions (e.g. a new conftest) are toxic —
+                # discard the whole iteration and restore the green baseline.
+                self._rollback_files(baseline, staging, safe_new)
+                self._log_staged(
+                    project_path, state_mgr, iteration,
+                    f"Staged verify: iteration {iteration} broke the passing "
+                    f"suite even after dropping its {len(risky)} runtime "
+                    f"change(s) — all of its changes were discarded and the "
+                    f"previous green code restored.")
+            else:
+                self._log_staged(
+                    project_path, state_mgr, iteration,
+                    f"Staged verify: {len(risky)} runtime change(s) would have "
+                    f"broken the passing suite and were dropped ({restored} "
+                    f"file(s) restored, {removed} removed); {len(safe_new)} new "
+                    f"test/doc file(s) were kept.")
+        except Exception as e:
+            self.logger.warning(f"Staged verify skipped on error: {e}")
+        finally:
+            try:
+                from orchestrator.state_manager import _CLEARABLE_STATE_SUBDIRS
+                state_mgr._safe_clear_dir(baseline, allowed_names=_CLEARABLE_STATE_SUBDIRS)
+            except OSError:
+                pass
 
     def run_cycle(self, project_path: Path):
         """Run the full tumbling cycle for a project (called from API).
