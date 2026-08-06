@@ -93,7 +93,9 @@ _PY_TEST_CMD = (
     # signal the feedback loop needs to converge.
     f'python -m pytest "$([ -d tests ] && echo tests || echo .)" '
     f'--tb=short --continue-on-collection-errors --ignore={_PY_DEPS} '
-    f'--cov=. --cov-config=.coveragerc-sandbox --cov-report=term '
+    # term-missing: the engineer needs the EXACT uncovered line numbers to
+    # target new tests — a bare percentage leaves it guessing blind.
+    f'--cov=. --cov-config=.coveragerc-sandbox --cov-report=term-missing '
     f'-p no:cacheprovider 2>&1 || true'
 )
 _PY_LINT_CMD = (
