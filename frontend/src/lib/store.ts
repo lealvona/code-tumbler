@@ -33,9 +33,10 @@ interface AppStore {
   appendChunk: (project: string, agent: string, chunk: string) => void;
   clearStreamingChunk: () => void;
 
-  // Track which agent is currently thinking
-  thinkingAgent: { project: string; agent: string } | null;
-  setThinkingAgent: (project: string, agent: string) => void;
+  // Track which agent is currently thinking (detail = e.g. reasoning-token
+  // progress from slow local models)
+  thinkingAgent: { project: string; agent: string; detail?: string } | null;
+  setThinkingAgent: (project: string, agent: string, detail?: string) => void;
   clearThinkingAgent: () => void;
 
   // Sandbox verification phases (live updates)
@@ -109,8 +110,12 @@ export const useStore = create<AppStore>((set) => ({
   clearStreamingChunk: () => set({ streamingChunk: null }),
 
   thinkingAgent: null,
-  setThinkingAgent: (project, agent) =>
-    set({ thinkingAgent: { project, agent }, streamingChunk: null }),
+  setThinkingAgent: (project, agent, detail) =>
+    set((state) => ({
+      thinkingAgent: { project, agent, detail },
+      // Reasoning progress updates must not wipe an active output stream.
+      streamingChunk: detail ? state.streamingChunk : null,
+    })),
   clearThinkingAgent: () => set({ thinkingAgent: null }),
 
   sandboxPhases: [],

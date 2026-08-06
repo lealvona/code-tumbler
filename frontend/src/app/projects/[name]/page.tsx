@@ -275,6 +275,7 @@ export default function ProjectDetailPage() {
           <AgentConversation
             projectName={name}
             isRunning={status.is_running}
+            currentPhase={status.current_phase}
             key={resetKey}
           />
         </TabsContent>
