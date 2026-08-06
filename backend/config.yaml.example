@@ -12,6 +12,26 @@ providers:
     concurrency_limit: 2
     retry_max_attempts: 2
     retry_base_delay: 1.0
+  # Local REASONING models (Qwen3.x etc. via llama.cpp): disable thinking.
+  # Reasoning tokens count against max_tokens, and unbounded thinking will
+  # consume the entire budget before any structured output is emitted —
+  # observed: a 50-minute spec call producing 56k chars of reasoning and an
+  # empty envelope, and even a trivial JSON reply returning empty content.
+  # llama.cpp honors the template-level switch via extra_params:
+  llamacpp_qwen_local:
+    type: openai
+    base_url: http://localhost:11434/v1
+    model: Qwen3-32B
+    context_length: 131072
+    cost_per_1k_input_tokens: 0.0
+    cost_per_1k_output_tokens: 0.0
+    temperature: 0.7
+    timeout: 600
+    concurrency_limit: 2
+    max_tokens: 32768
+    extra_params:
+      chat_template_kwargs:
+        enable_thinking: false
   vllm_local:
     type: vllm
     base_url: http://localhost:8000
