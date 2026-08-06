@@ -62,12 +62,34 @@ class APIOrchestrator(Orchestrator):
             "agent": agent,
         })
 
-    def _publish_thinking(self, project_path: Path, agent: str):
+    def _publish_thinking(self, project_path: Path, agent: str,
+                          detail: str = None):
         """Notify SSE subscribers that an agent is thinking."""
-        self.event_bus.publish("agent_thinking", {
-            "project": project_path.name,
-            "agent": agent,
-        })
+        data = {"project": project_path.name, "agent": agent}
+        if detail:
+            data["detail"] = detail
+        self.event_bus.publish("agent_thinking", data)
+
+    def _make_reasoning_publisher(self, project_path: Path, agent: str):
+        """Throttled sink for reasoning-model thinking tokens.
+
+        Local reasoning models can think for minutes before emitting one
+        output token — without this the UI looks hung. Publishes an
+        agent_thinking event with a running character count every ~2s.
+        """
+        state = {"chars": 0, "last": 0.0}
+
+        def on_reasoning(tok: str):
+            state["chars"] += len(tok)
+            now = time.monotonic()
+            if now - state["last"] >= 2.0:
+                state["last"] = now
+                n = state["chars"]
+                detail = (f"reasoning… {n // 1000}k chars" if n >= 1000
+                          else f"reasoning… {n} chars")
+                self._publish_thinking(project_path, agent, detail=detail)
+
+        return on_reasoning
 
     def _make_chunk_callback(self, project_path: Path, agent: str):
         """Create a callback that batches streaming chunks before publishing via SSE.
@@ -225,6 +247,9 @@ class APIOrchestrator(Orchestrator):
             scanner(chunk)
 
         self.specifier._on_chunk = combined
+        self.specifier._on_reasoning = self._make_reasoning_publisher(
+            project_path, "specifier")
+        heartbeat_stop = self._start_heartbeat(project_path)
         try:
             super()._run_specifier(project_path, state_mgr)
         except Exception as e:
@@ -236,8 +261,10 @@ class APIOrchestrator(Orchestrator):
             self._publish_conversation_update(project_path, "specifier")
             raise
         finally:
+            heartbeat_stop.set()
             chunk_cb._flush()
             self.specifier._on_chunk = None
+            self.specifier._on_reasoning = None
 
         llm_response = chunk_cb._get_full_content()
         if llm_response:
@@ -283,6 +310,9 @@ class APIOrchestrator(Orchestrator):
 
         chunk_cb = self._make_chunk_callback(project_path, "architect")
         self.architect._on_chunk = chunk_cb
+        self.architect._on_reasoning = self._make_reasoning_publisher(
+            project_path, "architect")
+        heartbeat_stop = self._start_heartbeat(project_path)
         try:
             super()._run_architect(project_path, state_mgr)
         except Exception as e:
@@ -294,8 +324,10 @@ class APIOrchestrator(Orchestrator):
             self._publish_conversation_update(project_path, "architect")
             raise
         finally:
+            heartbeat_stop.set()
             chunk_cb._flush()
             self.architect._on_chunk = None
+            self.architect._on_reasoning = None
 
         # Persist the full LLM response so it survives page refresh
         llm_response = chunk_cb._get_full_content()
@@ -388,6 +420,9 @@ class APIOrchestrator(Orchestrator):
 
         chunk_cb = self._make_chunk_callback(project_path, "engineer")
         self.engineer._on_chunk = chunk_cb
+        self.engineer._on_reasoning = self._make_reasoning_publisher(
+            project_path, "engineer")
+        heartbeat_stop = self._start_heartbeat(project_path)
         try:
             super()._run_engineer(project_path, state_mgr)
             if baseline is not None:
@@ -401,8 +436,10 @@ class APIOrchestrator(Orchestrator):
             self._publish_conversation_update(project_path, "engineer")
             raise
         finally:
+            heartbeat_stop.set()
             chunk_cb._flush()
             self.engineer._on_chunk = None
+            self.engineer._on_reasoning = None
 
         # Persist the full LLM response so it survives page refresh
         llm_response = chunk_cb._get_full_content()
@@ -530,6 +567,8 @@ class APIOrchestrator(Orchestrator):
 
         chunk_cb = self._make_chunk_callback(project_path, "verifier")
         self.verifier._on_chunk = chunk_cb
+        self.verifier._on_reasoning = self._make_reasoning_publisher(
+            project_path, "verifier")
         heartbeat_stop = self._start_heartbeat(project_path)
         try:
             # Inline the base daemon's _run_verifier logic so we can inject
@@ -590,6 +629,7 @@ class APIOrchestrator(Orchestrator):
             heartbeat_stop.set()
             chunk_cb._flush()
             self.verifier._on_chunk = None
+            self.verifier._on_reasoning = None
 
         score = state_mgr.get_score()
 

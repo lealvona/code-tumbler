@@ -62,6 +62,10 @@ class BaseAgent(ABC):
         self._nothink_override = nothink_override
         self.usage_history: List[Dict[str, Any]] = []
         self._on_chunk: Optional[Callable[[str], None]] = None
+        # Reasoning-model thinking tokens (delta.reasoning_content). Not part
+        # of the response — surfaced only as a liveness signal so slow local
+        # models don't look hung while they think.
+        self._on_reasoning: Optional[Callable[[str], None]] = None
         self.last_compression_metrics: Dict[str, Any] = {}
         self._context_manager = ContextManager()
         self._token_counter = self._context_manager.token_counter
@@ -252,6 +256,9 @@ class BaseAgent(ABC):
         tail_buf_size = 400  # chars to keep for pattern matching
         degenerate_check_interval = 200  # check every N chunks
 
+        # Hand the provider a reasoning-token sink for this call (providers
+        # are hot-swappable, so bind per-call rather than at construction).
+        self.provider._on_reasoning = self._on_reasoning
         stream = self.provider.stream_chat(
             messages=messages,
             temperature=temperature,
@@ -282,6 +289,8 @@ class BaseAgent(ABC):
             # Close the stream explicitly to avoid GeneratorExit warnings
             stream.close()
             raise
+        finally:
+            self.provider._on_reasoning = None
 
         response = "".join(chunks)
 

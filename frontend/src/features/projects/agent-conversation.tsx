@@ -21,7 +21,18 @@ import {
 interface AgentConversationProps {
   projectName: string;
   isRunning: boolean;
+  currentPhase?: string;
 }
+
+// Which agent is at work for each running phase — lets the UI show activity
+// from polled status alone, so a page opened mid-phase isn't blind until the
+// next SSE event (with slow local models that can be minutes away).
+const PHASE_AGENT: Record<string, string> = {
+  specifying: "specifier",
+  planning: "architect",
+  engineering: "engineer",
+  verifying: "verifier",
+};
 
 const AGENT_CONFIG: Record<
   string,
@@ -184,7 +195,7 @@ function StreamingContent({
   );
 }
 
-function ThinkingIndicator({ agent }: { agent: string }) {
+function ThinkingIndicator({ agent, detail }: { agent: string; detail?: string }) {
   const cfg = AGENT_CONFIG[agent] || AGENT_CONFIG.system;
   return (
     <div className={`rounded-lg ${cfg.border} ${cfg.bg} p-4 animate-pulse`}>
@@ -193,6 +204,9 @@ function ThinkingIndicator({ agent }: { agent: string }) {
         <span className={`text-sm font-semibold ${cfg.accent}`}>
           {cfg.label} is thinking...
         </span>
+        {detail && (
+          <span className="text-xs text-muted-foreground">{detail}</span>
+        )}
         <div className="flex gap-1">
           <span
             className={`w-2 h-2 rounded-full ${cfg.badgeBg} animate-bounce`}
@@ -421,6 +435,7 @@ function StreamingBubble({
 export function AgentConversation({
   projectName,
   isRunning,
+  currentPhase,
 }: AgentConversationProps) {
   const setConversationCache = useStore((s) => s.setConversationCache);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -456,10 +471,17 @@ export function AgentConversation({
     streamingChunk && streamingChunk.project === projectName
       ? streamingChunk
       : null;
-  const activeThinking =
+  const sseThinking =
     thinkingAgent && thinkingAgent.project === projectName
       ? thinkingAgent
       : null;
+  // Fallback: derive activity from the polled phase when no SSE state has
+  // arrived yet (page opened mid-phase, or a long silent generation).
+  const phaseAgent =
+    isRunning && currentPhase ? PHASE_AGENT[currentPhase] : undefined;
+  const activeThinking =
+    sseThinking ??
+    (phaseAgent ? { project: projectName, agent: phaseAgent } : null);
 
   const fetchConversation = useCallback(() => {
     api
@@ -694,7 +716,10 @@ export function AgentConversation({
                 <SandboxOutput phases={sandboxPhases} isLive={true} />
               )}
               {activeThinking && isRunning && !activeStreaming && (
-                <ThinkingIndicator agent={activeThinking.agent} />
+                <ThinkingIndicator
+                  agent={activeThinking.agent}
+                  detail={sseThinking?.detail}
+                />
               )}
               {activeStreaming && isRunning && (
                 <StreamingBubble

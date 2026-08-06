@@ -232,6 +232,18 @@ class OpenAIProvider(LLMProvider):
             delta = chunk.choices[0].delta
             content = delta.content
 
+            # Reasoning models (llama.cpp Qwen etc.) stream thinking as
+            # reasoning_content — never part of the response, but forwarded
+            # as a liveness signal so long thinks don't look like hangs.
+            reasoning = getattr(delta, 'reasoning_content', None)
+            if reasoning:
+                cb = getattr(self, '_on_reasoning', None)
+                if cb:
+                    try:
+                        cb(reasoning)
+                    except Exception:
+                        pass
+
             if content:
                 yield content
 
@@ -409,6 +421,14 @@ class OpenAIProvider(LLMProvider):
 
             delta = chunk.choices[0].delta
             content = delta.content
+            reasoning = getattr(delta, 'reasoning_content', None)
+            if reasoning:
+                cb = getattr(self, '_on_reasoning', None)
+                if cb:
+                    try:
+                        cb(reasoning)
+                    except Exception:
+                        pass
             if content:
                 yield content
 

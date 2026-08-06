@@ -74,8 +74,9 @@ export function useSSE() {
           const event: SSEEvent = JSON.parse(e.data);
           const project = event.data?.project as string;
           const agent = event.data?.agent as string;
+          const detail = event.data?.detail as string | undefined;
           if (project && agent) {
-            setThinkingAgent(project, agent);
+            setThinkingAgent(project, agent, detail);
           }
         } catch { /* ignore */ }
       });
