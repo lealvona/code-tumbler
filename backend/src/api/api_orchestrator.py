@@ -676,6 +676,10 @@ class APIOrchestrator(Orchestrator):
     _STAGE_IGNORE = ('.sandbox_deps', 'node_modules', '__pycache__',
                      '.venv', 'venv', '.git', 'dist', 'build')
 
+    # Max risky files worth probing one-by-one (~40s per probe). Beyond
+    # this, fall back to wholesale rollback.
+    _BISECT_MAX = 6
+
     def _append_gate_directive(self, project_path: Path, iteration: int, vres) -> None:
         """Append a protected-mode directive to the iteration report when the
         runtime code is fully healthy (build + all tests green) and only
@@ -852,6 +856,27 @@ class APIOrchestrator(Orchestrator):
                 self.logger.warning(f"Staged-verify rollback skipped {rel}: {e}")
         return restored, removed
 
+    def _apply_attempt_file(self, staging: Path, rel: str,
+                            content: Optional[bytes], baseline: Path) -> None:
+        """Re-apply one saved risky change during bisection: write the
+        engineer's bytes, or — when content is None (a deletion attempt) —
+        remove the file. Path-contained like rollback."""
+        dst = staging / rel
+        try:
+            if not dst.resolve().is_relative_to(staging.resolve()):
+                return
+        except OSError:
+            return
+        try:
+            if content is None:
+                if dst.is_file():
+                    dst.unlink()
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(content)
+        except OSError as e:
+            self.logger.warning(f"Bisection apply skipped {rel}: {e}")
+
     def _merged_verification_config(self, state_mgr: StateManager):
         merged = self._config.verification if self._config else None
         if merged is None:
@@ -988,31 +1013,73 @@ class APIOrchestrator(Orchestrator):
                     f"({len(safe_new)} new test/doc file(s))."
                     + self._quarantine_note(q))
                 return
-            restored, removed = self._rollback_files(baseline, staging, risky)
-            probe2 = self.verifier.run_test_probe(staging, vc)
-            if probe2 and probe2.get("ran") and self._old_suite_broken(
-                    probe2, new_files, base_probe):
+            # Per-file bisection: the risky set usually mixes genuine fixes
+            # with one poison file. All-or-nothing rollback discarded the
+            # good with the bad (three plateau iterations banked nothing
+            # despite correctly-targeted fixes). Save the engineer's risky
+            # versions, roll everything back, then re-apply one file at a
+            # time — keeping each file whose probe holds the suite green.
+            attempt: Dict[str, Optional[bytes]] = {}
+            for rel in risky:
+                p = staging / rel
+                try:
+                    attempt[rel] = p.read_bytes() if p.is_file() else None
+                except OSError:
+                    attempt[rel] = None
+            self._rollback_files(baseline, staging, risky)
+
+            kept: List[str] = []
+            dropped: List[str] = []
+            final_probe = None
+            if len(risky) <= self._BISECT_MAX:
+                # Test-file edits first — most likely to be benign fixes.
+                order = sorted(
+                    risky,
+                    key=lambda r: (not r.startswith(('tests/', 'test/')), r))
+                for rel in order:
+                    self._apply_attempt_file(staging, rel, attempt[rel],
+                                             baseline)
+                    p_i = self.verifier.run_test_probe(staging, vc)
+                    if (p_i and p_i.get("ran")
+                            and not self._old_suite_broken(p_i, new_files, base_probe)):
+                        kept.append(rel)
+                        final_probe = p_i
+                    else:
+                        self._rollback_files(baseline, staging, [rel])
+                        dropped.append(rel)
+            else:
+                dropped = list(risky)
+
+            if final_probe is None:
+                final_probe = self.verifier.run_test_probe(staging, vc)
+            if (final_probe and final_probe.get("ran")
+                    and self._old_suite_broken(final_probe, new_files, base_probe)):
                 # Even the "safe" additions (e.g. a new conftest) are toxic —
                 # discard the whole iteration and restore the green baseline.
-                self._rollback_files(baseline, staging, safe_new)
+                self._rollback_files(baseline, staging, kept + safe_new)
                 self._log_staged(
                     project_path, state_mgr, iteration,
                     f"Staged verify: iteration {iteration} broke the passing "
-                    f"suite even after dropping its {len(risky)} runtime "
-                    f"change(s) — all of its changes were discarded and the "
-                    f"previous green code restored.")
-            else:
-                q = []
-                if probe2 and probe2.get("ran"):
-                    q = self._quarantine_failing_new(
-                        baseline, staging, probe2, new_files)
-                self._log_staged(
-                    project_path, state_mgr, iteration,
-                    f"Staged verify: {len(risky)} runtime change(s) would have "
-                    f"broken the passing suite and were dropped ({restored} "
-                    f"file(s) restored, {removed} removed); "
-                    f"{len(safe_new) - len(q)} new test/doc file(s) were kept."
-                    + self._quarantine_note(q))
+                    f"suite even after dropping its risky change(s) — all of "
+                    f"its changes were discarded and the previous green code "
+                    f"restored.")
+                return
+            q = []
+            if final_probe and final_probe.get("ran"):
+                q = self._quarantine_failing_new(
+                    baseline, staging, final_probe, new_files)
+
+            def _names(rels, cap=5):
+                s = ", ".join(rels[:cap])
+                return s + (f" (+{len(rels) - cap} more)" if len(rels) > cap else "")
+            msg = (f"Staged verify (bisected): kept {len(kept)} of "
+                   f"{len(risky)} risky change(s)"
+                   + (f" [{_names(kept)}]" if kept else "")
+                   + f"; dropped {len(dropped)} suite-breaking"
+                   + (f" [{_names(dropped)}]" if dropped else "")
+                   + f"; {len(safe_new) - len(q)} new test/doc file(s) kept."
+                   + (self._quarantine_note(q) if q else ""))
+            self._log_staged(project_path, state_mgr, iteration, msg)
         except Exception as e:
             self.logger.warning(f"Staged verify skipped on error: {e}")
         finally:
