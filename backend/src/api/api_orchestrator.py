@@ -735,12 +735,14 @@ class APIOrchestrator(Orchestrator):
             # Fresh start: full reset
             state_mgr.reset_for_run()
 
-        # Persist the effective threshold so the UI's "target" matches the
-        # policy this run actually enforces (state may hold a stale
-        # creation-time default).
+        # Persist the effective threshold/ceiling so the UI matches the
+        # policy this run actually enforces (state may hold stale
+        # creation-time defaults).
         state = state_mgr.load_state()
-        if state.get('quality_threshold') != self.quality_threshold:
+        if (state.get('quality_threshold') != self.quality_threshold
+                or state.get('max_iterations') != self.max_iterations):
             state['quality_threshold'] = self.quality_threshold
+            state['max_iterations'] = self.max_iterations
             state_mgr.save_state(state)
 
         # Set up per-project log file
