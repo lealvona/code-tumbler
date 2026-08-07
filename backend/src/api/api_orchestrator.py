@@ -15,6 +15,7 @@ from utils.config import Config, VerificationConfig, resolve_agent_provider
 from utils.plan_parser import extract_resource_requirements
 from utils.provider_factory import create_provider
 from agents.base_agent import DegenerateOutputError
+from agents.engineer import EngineerParseError
 
 
 class APIOrchestrator(Orchestrator):
@@ -1231,19 +1232,27 @@ class APIOrchestrator(Orchestrator):
                 try:
                     self._run_engineer(project_path, state_mgr)
                     consecutive_failures = 0
-                except DegenerateOutputError as e:
+                except (DegenerateOutputError, EngineerParseError) as e:
+                    # Both are retryable single-iteration failures — a bad
+                    # generation must cost one attempt, never the whole run
+                    # (an unparseable envelope at iteration 6 previously
+                    # killed a five-iteration all-local run outright).
                     consecutive_failures += 1
                     iteration = state_mgr.get_iteration()
-                    self.logger.warning(f"Degenerate output from engineer (attempt {consecutive_failures})")
+                    kind = ("degenerate output"
+                            if isinstance(e, DegenerateOutputError)
+                            else "unparseable output")
+                    self.logger.warning(
+                        f"Engineer {kind} (attempt {consecutive_failures})")
                     state_mgr.log_conversation(
                         agent="engineer", role="error", iteration=iteration,
-                        content=f"Engineer produced degenerate output: {e}",
-                        metadata={"label": "Degenerate Output"},
+                        content=f"Engineer produced {kind}: {e}",
+                        metadata={"label": "Retryable Failure"},
                     )
                     self._publish_conversation_update(project_path, "engineer")
                     if consecutive_failures >= max_consecutive_failures:
                         raise ValueError(
-                            f"Engineer produced degenerate output {consecutive_failures} "
+                            f"Engineer produced {kind} {consecutive_failures} "
                             f"times in a row. The model may not be suitable for this task."
                         )
                     continue  # retry the engineer without incrementing verifier
