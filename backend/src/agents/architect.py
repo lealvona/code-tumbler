@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class ArchitectAgent(BaseAgent):
+    # Below this, the output is an acknowledgement, not a plan.
+    _MIN_PLAN_CHARS = 800
+
     """The Architect Agent plans project architecture.
 
     Responsibilities:
@@ -144,6 +147,10 @@ Focus on:
 Remember: Another AI will implement your plan, so be specific and unambiguous.
 """
 
+        correction = context.get('format_correction')
+        if correction:
+            user_message += f"\n# FORMAT CORRECTION (mandatory)\n\n{correction}\n"
+
         return [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message}
@@ -183,6 +190,30 @@ Remember: Another AI will implement your plan, so be specific and unambiguous.
 
         # Execute the agent
         plan = self.execute(context, **kwargs)
+
+        # Validate: a plan drives every downstream agent, and small local
+        # models sometimes answer the instructions ABOUT the plan instead of
+        # producing one (observed: a literal 2-char "OK" became PLAN.md and
+        # the engineer degenerated on it). One corrective retry, then fail
+        # loudly — the orchestrator's bounded retry loop handles the rest.
+        if len(plan.strip()) < self._MIN_PLAN_CHARS:
+            logger.warning(
+                "Architect returned %d chars — not a plan; retrying with "
+                "format correction", len(plan.strip()))
+            retry_ctx = dict(context)
+            retry_ctx['format_correction'] = (
+                f"Your previous response was {len(plan.strip())} characters "
+                f"({plan.strip()[:80]!r}) — that is NOT a plan. Produce the "
+                f"COMPLETE technical plan NOW, following the exact format in "
+                f"your system prompt: architecture, full file structure, "
+                f"implementation details for every file, testing strategy, "
+                f"and the RUBRIC.yaml block. Do not acknowledge; PLAN."
+            )
+            plan = self.execute(retry_ctx, **kwargs)
+            if len(plan.strip()) < self._MIN_PLAN_CHARS:
+                raise ValueError(
+                    f"Architect produced no usable plan after retry "
+                    f"({len(plan.strip())} chars)")
 
         # Save to file if output_path provided
         if output_path:

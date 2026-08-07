@@ -1238,7 +1238,25 @@ class APIOrchestrator(Orchestrator):
                             self._publish_conversation_update(
                                 project_path, "specifier")
                             time.sleep(5)
-                self._run_architect(project_path, state_mgr)
+                # Same bounded budget for the architect: a non-plan ("OK")
+                # or degenerate/connection failure costs an attempt.
+                for attempt in range(1, 4):
+                    try:
+                        self._run_architect(project_path, state_mgr)
+                        break
+                    except (DegenerateOutputError, ValueError,
+                            APIConnectionError, APITimeoutError) as e:
+                        if attempt >= 3:
+                            raise
+                        self.logger.warning(
+                            f"Architect attempt {attempt} failed ({e}) — retrying")
+                        state_mgr.log_conversation(
+                            agent="architect", role="error", iteration=0,
+                            content=f"Architect attempt {attempt} failed — retrying: {e}",
+                            metadata={"label": "Retryable Failure"},
+                        )
+                        self._publish_conversation_update(project_path, "architect")
+                        time.sleep(5)
 
             # Phase 2-3: Engineer -> Verifier loop
             progress_history: list[tuple] = []
