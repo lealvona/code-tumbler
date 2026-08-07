@@ -1214,7 +1214,30 @@ class APIOrchestrator(Orchestrator):
                 if (self.specifier is not None
                         and state_mgr.is_spec_enabled()
                         and not state_mgr.is_spec_complete()):
-                    self._run_specifier(project_path, state_mgr)
+                    # Bounded retries, mirroring the engineer: degenerate or
+                    # malformed specifier output (small local models produce
+                    # both under sampling variance) costs an attempt, not
+                    # the run.
+                    for attempt in range(1, 4):
+                        try:
+                            self._run_specifier(project_path, state_mgr)
+                            break
+                        except (DegenerateOutputError, ValueError,
+                                APIConnectionError, APITimeoutError) as e:
+                            if attempt >= 3:
+                                raise
+                            self.logger.warning(
+                                f"Specifier attempt {attempt} failed "
+                                f"({e}) — retrying")
+                            state_mgr.log_conversation(
+                                agent="specifier", role="error", iteration=0,
+                                content=(f"Specifier attempt {attempt} "
+                                         f"failed — retrying: {e}"),
+                                metadata={"label": "Retryable Failure"},
+                            )
+                            self._publish_conversation_update(
+                                project_path, "specifier")
+                            time.sleep(5)
                 self._run_architect(project_path, state_mgr)
 
             # Phase 2-3: Engineer -> Verifier loop
