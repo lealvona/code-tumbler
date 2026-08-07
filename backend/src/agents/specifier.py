@@ -121,6 +121,12 @@ class SpecifierAgent(BaseAgent):
             raise ValueError("Specifier output did not contain a valid {\"files\": [...]} envelope")
 
         files = obj.get("files")
+        # Dialect: some models name the envelope key after the artifact.
+        if files is None:
+            for alt in ("spec", "specs", "specifications"):
+                if isinstance(obj.get(alt), (list, dict)):
+                    files = obj[alt]
+                    break
 
         # Dialect: {"files": {path: content}} — files as a map.
         if isinstance(files, dict):
