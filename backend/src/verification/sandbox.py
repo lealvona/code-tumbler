@@ -951,11 +951,21 @@ class SandboxExecutor:
         self._notify_phase(on_phase_complete, "test", test_results, test_cmds,
                            status_override=test_status)
 
+        lint_status = None
         if lint_results:
             r = lint_results[0]
             results.lint_output = r.stdout + ("\n" + r.stderr if r.stderr else "")
             results.lint_issues = self._count_lint_issues(r.stdout + r.stderr)
-        self._notify_phase(on_phase_complete, "lint", lint_results, lint_cmds)
+            # The lint command ends `|| true`, so exit code is always 0 and
+            # the badge would read "success" over any number of findings
+            # (observed: green chip, 39 errors). Mirror the section-gate
+            # semantics instead: ≤3 issues keeps the gate ≥85% — same bar,
+            # same verdict, no lying chip. (Same fix as the test badge.)
+            if not r.timed_out:
+                lint_status = ("success" if results.lint_issues <= 3
+                               else "failed")
+        self._notify_phase(on_phase_complete, "lint", lint_results, lint_cmds,
+                           status_override=lint_status)
 
         # --- Phase 4b: Runtime smoke (import the package; no network) ---
         if runtime.language == "python":
