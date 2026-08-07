@@ -16,6 +16,7 @@ from utils.plan_parser import extract_resource_requirements
 from utils.provider_factory import create_provider
 from agents.base_agent import DegenerateOutputError
 from agents.engineer import EngineerParseError
+from openai import APIConnectionError, APITimeoutError
 
 
 class APIOrchestrator(Orchestrator):
@@ -1232,16 +1233,23 @@ class APIOrchestrator(Orchestrator):
                 try:
                     self._run_engineer(project_path, state_mgr)
                     consecutive_failures = 0
-                except (DegenerateOutputError, EngineerParseError) as e:
-                    # Both are retryable single-iteration failures — a bad
-                    # generation must cost one attempt, never the whole run
-                    # (an unparseable envelope at iteration 6 previously
-                    # killed a five-iteration all-local run outright).
+                except (DegenerateOutputError, EngineerParseError,
+                        APIConnectionError, APITimeoutError) as e:
+                    # All are retryable single-iteration failures — a bad
+                    # generation must cost one attempt, never the whole run.
+                    # An unparseable envelope at iteration 6 once killed a
+                    # five-iteration all-local run; a mid-stream connection
+                    # drop ("incomplete chunked read" when the local llama
+                    # server died) killed the next one at iteration 10.
                     consecutive_failures += 1
                     iteration = state_mgr.get_iteration()
-                    kind = ("degenerate output"
-                            if isinstance(e, DegenerateOutputError)
-                            else "unparseable output")
+                    if isinstance(e, DegenerateOutputError):
+                        kind = "degenerate output"
+                    elif isinstance(e, EngineerParseError):
+                        kind = "unparseable output"
+                    else:
+                        kind = "a connection failure to the model server"
+                        time.sleep(10)  # give a restarting server a moment
                     self.logger.warning(
                         f"Engineer {kind} (attempt {consecutive_failures})")
                     state_mgr.log_conversation(
@@ -1261,6 +1269,22 @@ class APIOrchestrator(Orchestrator):
                     break
 
                 try:
+                    self._run_verifier(project_path, state_mgr)
+                except (APIConnectionError, APITimeoutError) as e:
+                    # Transient model-server drop mid-verification: one
+                    # bounded retry after a grace period; a second failure
+                    # propagates (something is actually down).
+                    self.logger.warning(
+                        f"Verifier connection failure — retrying once: {e}")
+                    state_mgr.log_conversation(
+                        agent="verifier", role="error",
+                        iteration=state_mgr.get_iteration(),
+                        content=(f"Model-server connection failed during "
+                                 f"verification — retrying once: {e}"),
+                        metadata={"label": "Retryable Failure"},
+                    )
+                    self._publish_conversation_update(project_path, "verifier")
+                    time.sleep(10)
                     self._run_verifier(project_path, state_mgr)
                 except DegenerateOutputError as e:
                     iteration = state_mgr.get_iteration()
