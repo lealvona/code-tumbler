@@ -16,6 +16,14 @@ from .base_agent import BaseAgent
 logger = logging.getLogger(__name__)
 
 
+class EngineerParseError(ValueError):
+    """Engineer output could not be parsed into a file envelope.
+
+    Distinct from generic ValueError so the orchestrator can treat it as a
+    retryable iteration failure (like DegenerateOutputError) instead of
+    killing the whole run."""
+
+
 class EngineerAgent(BaseAgent):
     """The Engineer Agent generates code.
 
@@ -404,7 +412,7 @@ remove:
                 f"Response preview (first 500 chars):\n{response[:500]}\n\n"
                 f"Raw output saved to: {debug_dir / f'engineer_raw_output_iter{iteration}.txt' if output_dir else 'N/A'}"
             )
-            raise ValueError(error_msg)
+            raise EngineerParseError(error_msg)
 
     # -- Chunk generation ---------------------------------------------------
 
@@ -738,23 +746,44 @@ remove:
                 lists = [v for v in files_array.values() if isinstance(v, list)]
                 if len(lists) == 1:
                     files_array = lists[0]
+                else:
+                    # Dialect: flat {path: content} map — same shape the
+                    # specifier accepts; small models emit it reliably.
+                    flat = [(k, v) for k, v in files_array.items()
+                            if isinstance(k, str) and isinstance(v, str)
+                            and ('/' in k or '.' in k)]
+                    if flat and len(flat) >= max(1, int(0.5 * len(files_array))):
+                        files_array = [{"path": p, "content": c}
+                                       for p, c in flat]
 
         if not isinstance(files_array, list):
             raise ValueError("Expected JSON array of files")
 
         files = {}
+        skipped = 0
         for file_obj in files_array:
             if not isinstance(file_obj, dict):
-                raise ValueError(f"Invalid file object: {file_obj}")
-
-            path = file_obj.get('path')
+                skipped += 1
+                continue
+            # Key aliases: models drift between path/file_path/filename.
+            path = (file_obj.get('path') or file_obj.get('file_path')
+                    or file_obj.get('filepath') or file_obj.get('filename')
+                    or file_obj.get('name'))
             content = file_obj.get('content')
+            if content is None and isinstance(file_obj.get('code'), str):
+                content = file_obj['code']
 
             if not path or content is None:
-                raise ValueError(f"File object missing 'path' or 'content'")
-
+                skipped += 1
+                continue
             files[path] = content
 
+        if not files:
+            raise ValueError("No valid file objects (need 'path' + 'content')")
+        if skipped:
+            logger.warning(
+                f"Engineer envelope: skipped {skipped} malformed file object(s), "
+                f"kept {len(files)}")
         return files
 
     def _parse_with_regex(self, response: str) -> Dict[str, str]:
@@ -766,7 +795,8 @@ remove:
         # Pattern to match file objects:
         # "path": "...", "content": "..."
         # This is very lenient and handles multi-line content
-        pattern = r'"path"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"'
+        pattern = (r'"(?:file_?path|path|filename)"\s*:\s*"([^"]+)"\s*,\s*'
+                   r'"(?:content|code)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
         for match in re.finditer(pattern, response, re.DOTALL):
             path = match.group(1)
