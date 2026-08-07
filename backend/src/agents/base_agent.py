@@ -90,6 +90,13 @@ class BaseAgent(ABC):
         Checks if the tail of output consists of a short pattern repeated
         many times, which indicates the model is stuck in a loop.
         """
+        # Character-diversity guard: a long tail built from ≤3 distinct
+        # characters is never legitimate output. Catches escape-spiral
+        # floods (\n -> \\n -> \\\\n ...) whose GROWING units evade the
+        # fixed-pattern matching below — observed streaming backslash soup
+        # for 75 minutes without tripping it.
+        if len(tail) >= 300 and len(set(tail[-300:])) <= 3:
+            return True
         if len(tail) < max_pattern_len * repeat_threshold:
             return False
         for plen in range(min_pattern_len, max_pattern_len + 1):
